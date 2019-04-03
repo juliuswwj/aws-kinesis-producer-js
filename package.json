@@ -1,0 +1,27 @@
+{
+  "name": "aws-kinesis-put-media-nodejs",
+  "version": "0.1.0",
+  "description": "aws kinesis put media nodejs module using pure javascript",
+  "main": "index.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/juliuswwj/aws-kinesis-put-media-nodejs.git"
+  },
+  "keywords": [
+    "aws",
+    "kinesis",
+    "streaming"
+  ],
+  "author": "juliuswwj@gmail.com",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/juliuswwj/aws-kinesis-put-media-nodejs/issues"
+  },
+  "homepage": "https://github.com/juliuswwj/aws-kinesis-put-media-nodejs#readme"
+}
