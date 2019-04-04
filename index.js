@@ -1,10 +1,17 @@
 'use strict'
 var https = require('https');
+var crypto = require('crypto');
 
 function beint(n){
-    if(n & 0xffff0000){
+    if(n & 0xff000000){
         var b = new Buffer(4);
         b.writeUInt32BE(n, 0);
+        return b;
+    } 
+    if(n & 0xff0000){
+        var b = new Buffer(3);
+        b[0] = n>>16;
+        b.writeUInt16BE(n&0xffff, 1);
         return b;
     } 
     if(n & 0xff00){
@@ -23,8 +30,8 @@ function bedouble(n){
 
 function benum(n){
     var b = new Buffer(8);
-    b.writeUInt32BE(n>>32, 0);
-    b.writeUInt32BE(n, 4);
+    b.writeUInt32BE(n/65536/65536, 0); // only / can handle 32+ bits
+    b.writeUInt32BE(n&0xffffffff, 4);
     if(b[0]) return new Buffer([0xff]);
     if(b[1] & 0xfe){ b[0] = 1; return b; }
     if(b[1] || (b[2] & 0xfc)) { b[1] |= 2; return b.slice(1); }
@@ -52,13 +59,14 @@ function randbuf(len){
 /**
  * 
  * @param {object} options            mandatory
+ * @param {object} options.stream     mandatory
  * @param {number} options.timescale  optional, default 1000000, which means unit of ts is millisecond
  * @param {string} options.appmux     optional
  * @param {string} options.appwrite   optional
  * 
  * @param {object} options.v          mandatory
  * @param {string} options.v.codec    optional, default V_MPEG4/ISO/ASP
- * @param {number} options.v.duration mandatory, per frame, in ns
+ * @param {number} options.v.duration mandatory, per frame, in timescale
  * @param {number} options.v.width    mandatory
  * @param {number} options.v.height   mandatory
  * @param {Buffer} options.v.data     mandatory, codec private data
@@ -69,7 +77,7 @@ function randbuf(len){
  * @param {number} options.a.freq     mandatory
  * @param {Buffer} options.a.data     mandatory, codec private data
  * 
- * @param {function} cb    function(data, push){}
+ * @param {function} cb    function(data_array){}
  */
 function MKVBuilder(options, cb){
     if(!(this instanceof MKVBuilder)){
@@ -109,7 +117,7 @@ function MKVBuilder(options, cb){
             ebml(0x83, beint(0x01)), // track type, video
             ebml(0x536E, new Buffer('video')), // track name
             ebml(0x86, new Buffer(options.v.codec)), // codec info
-            ebml(0x23E383, bedouble(optins.v.duration)), // Duration
+            ebml(0x23E383, beint(options.v.duration*options.timescale)), // Duration
             ebml(0xE0, Buffer.concat([   // Video Info
                 ebml(0xB0, beint(options.v.width)),  // width
                 ebml(0xBA, beint(options.v.height)), // height
@@ -117,7 +125,10 @@ function MKVBuilder(options, cb){
             ebml(0x63A2, options.v.data) // private data
         ]))
     ];
+    this.vduration = options.v.duration;
+    this.aduration = options.v.duration / 2;
     if(options.a){
+        if(options.a.duration) this.aduration = options.a.duration;
         if(!options.a.codec) options.a.codec = 'A_AAC';
         if(!options.a.channles) options.a.channles = 2;
         tracks.push(ebml(0xAE, Buffer.concat([  // track info
@@ -126,6 +137,7 @@ function MKVBuilder(options, cb){
             ebml(0x83, beint(0x02)), // track type, audio
             ebml(0x536E, new Buffer('audio')), // track name
             ebml(0x86, new Buffer(options.a.codec)), // codec info
+            //ebml(0x23E383, beint(options.a.duration*options.timescale)), // Duration
             ebml(0xE1, Buffer.concat([  // audio info
                 ebml(0xB5, bedouble(options.a.freq)), // sampling freq
                 ebml(0x9f, beint(options.a.channels)), // channels
@@ -133,28 +145,54 @@ function MKVBuilder(options, cb){
             ebml(0x63A2, options.a.data) // private data
         ])));
     }
-    var data = [
+    cb([
         ebml(0x1A45DFA3, Buffer.concat(header)),  // EBML
         beint(0x18538067), new Buffer([0xff]), // Segment (unknown length)
         ebml(0x1549A966, Buffer.concat(seginfo)), // SegmentInfo
-        ebml(0x1549A966, Buffer.concat(tracks)), // SegmentInfo
-    ];
-    cb(Buffer.concat(data), false);
+        ebml(0x1654AE6B, Buffer.concat(tracks)), // tracks
+    ]);
     this.cb = cb;
+    this.vts = 0;
+    this.ats = 0;
+    this.tsbase = 0;
+    this.data = [];
+    this.csize = 0;
 }
 
 /**
  * @param {Buffer} data   1 frame data
- * @param {number} ts     timestamp
  * @param {number} type   1: discardable, 8: invisible, 0x80: key frame, 0x100: audio
  */
-MKVBuilder.prototype.putFrame = function(data, ts, type){
-    var tmcode = ebml(0xe7, beint(ts));
+MKVBuilder.prototype.putFrame = function(data, type){
+    if(type == 0x80){ // video I frame, start of cluster
+        if(this.csize){
+            this.data[0] = Buffer.concat([beint(0x1F43B675), benum(this.csize)]); // cluster
+            this.cb(this.data);
+        }
+        this.tsbase = this.vts;
+        this.data = [0, ebml(0xe7, beint(this.tsbase))]; // tmcode
+        this.csize = this.data[1].length;
+    }
+    if(this.data.length < 2) return false;  // wait video I frame
+
+    var ts;
+    if(type & 0x100){
+        ts = this.ats;
+        this.ats += this.aduration;
+    } else {
+        ts = this.vts;
+        this.ats = ts;
+        this.vts += this.vduration;
+    }
+    ts -= this.tsbase;
+
     var block = Buffer.concat([beint(0xa3), benum(4 + data.length),
         benum((type>>8)+1), // track number
-        new Buffer([0, 0, type&0xff])]); // sint16 timecode diff, uint8 flags
-    this.cb(Buffer.concat([beint(0x1F43B675), benum(tmcode.length + block.length + data.length), tmcode, block]), false); // cluster
-    this.cb(data, true); // dont concat data for performance
+        new Buffer([ts>>8, ts&0xff, type&0xff])]); // sint16 timecode diff, uint8 flags
+    this.data.push(block);
+    this.data.push(data);
+    this.csize += block.length + data.length;
+    return true;
 };
 
 /**
@@ -166,7 +204,7 @@ MKVBuilder.prototype.putFrame = function(data, ts, type){
  */
 function Kinesis(options){
     if(!(this instanceof Kinesis)){
-        return new Kinesis(optoins);
+        return new Kinesis(options);
     }
 
     // check parameters
@@ -187,6 +225,8 @@ function Kinesis(options){
         options.useragent = 'AWS-KINESIS-PUT-MEDIA/0.1.0 ' + process.title + '/' + process.version;
     }
 
+    options.service = 'kinesisvideo';
+
     this.options = options;
 }
 
@@ -196,16 +236,108 @@ function amzdate(){
 
 /**
  * 
- * @param {object} headers 
+ * @param {string} halg 
+ * @param {Buffer} key 
+ */
+function createHmac(halg, key){
+    if(crypto.createHmac)return crypto.createHmac(halg, key);
+    var data = new Buffer(0);
+    key = new Buffer(key);
+
+    function hash2(a, b){
+        var h = crypto.createHash(halg);
+        h.update(a);
+        h.update(b);
+        return h.digest();
+    }
+    return {
+        update: function(v){
+            data = Buffer.concat([data, v]);
+        },
+        digest: function(encoding){
+            var l = key.length;
+            var ikey = Buffer.alloc( (l+63)&0xffffc0, 0x36);  // HMAC-SHA256 uses 64 bytes pad
+            var okey = Buffer.alloc( (l+63)&0xffffc0, 0x5c);
+            for(var i = 0; i < l; i++){
+                ikey[i] ^= key[i];
+                okey[i] ^= key[i];
+            }
+            var b = hash2(okey, hash2(ikey, data));
+            if(encoding) return b.toString(encoding);
+            return b;
+        }
+    };
+}
+
+function hmac(key, data, encoding)
+{
+    var hmac = createHmac('sha256', key);
+    hmac.update(new Buffer(data, 'utf8'));
+    return hmac.digest(encoding);
+}
+
+function hash(data)
+{
+    var h = crypto.createHash('sha256');
+    h.update(new Buffer(data, 'utf8'));
+    return h.digest('hex');
+}
+
+/**
+ * 
+ * @param {object} req 
+ * @param {string} txt 
  * @param {object} options 
  */
-function genAWS4Auth(headers, options){
-    var crypto = require('crypto');
-    var hmac = crypto.createHmac('sha256', 'a secret');
+function genAWS4Auth(req, txt, options)
+{
     var algorithm = 'AWS4-HMAC-SHA256';
-    var fields = ['connection', 'host', 'transfer-encoding', 'user-agent', 
+    var fields = ['content-type', 'connection', 'host', 'transfer-encoding', 'user-agent', 
         'x-amz-date', 'x-amzn-fragment-acknowledgment-required', 'x-amzn-fragment-timecode-type', 
         'x-amzn-producer-start-timestamp', 'x-amzn-stream-name'];
+    
+    // build canonicalRequest
+    // assume empty query string
+    var str = [req.method, req.path, ''];
+    var signed = [];
+    for(var i = 0; i < fields.length; i++){
+        var n = fields[i];
+        var v = req.headers[n];
+        if(! v ) continue;
+        signed.push(n);
+        str.push(n + ':' + v);
+    }
+    str.push('');
+    str.push(signed.join(';'));
+    str.push(hash(txt)); // body
+    str = str.join('\n');
+
+    //console.log(str);
+
+    // datetime string for key generation
+    var datetime = req.headers['x-amz-date'];
+    var date = datetime.substr(0, 8);
+
+    // get key from cache
+    var credential = [date, options.region, options.service, 'aws4_request'];
+    var cachename = credential.join('/');
+    var key = options[cachename];
+    if(!key){
+        var key = 'AWS4' + options.key;
+        for(var i = 0; i < credential.length; i++){
+            key = hmac(key, credential[i]);
+        }
+        options[cachename] = key;
+    }
+    //console.log(key.toString('hex'));
+
+    // calculate auth line
+    str = [algorithm, datetime, cachename, hash(str)].join('\n');
+    //console.log(str);
+    str = algorithm + ' Credential=' + options.keyid + '/' + cachename + 
+        ', SignedHeaders=' + signed.join(';') + 
+        ', Signature=' + hmac(key, str, 'hex');
+    req.headers['Authorization'] = str;
 };
 
 
@@ -216,8 +348,8 @@ Kinesis.prototype.getEndPoint = function(cb){
     if(!cb || typeof cb !== 'function'){
         throw new Error("getEndPoint: invalid callback");
     }
-    var txt = JSON.stringify({APIName:'PUT_MEDIA', StreamName:this.options.stream});
-    var host = 'kinesisvideo.' + this.options.region + '.amazonaws.com';
+    var txt = JSON.stringify({APIName:'PUT_MEDIA', StreamName:this.options.stream}) + '\n';
+    var host = this.options.service + '.' + this.options.region + '.amazonaws.com';
     var options = {
         method: 'POST',
         path: '/getDataEndpoint',
@@ -227,11 +359,12 @@ Kinesis.prototype.getEndPoint = function(cb){
             'user-agent': this.options.useragent,
             'host': host,
             'x-amz-date': amzdate(),
-            'Content-Type': 'application/x-www-form-urlencoded', // same as sdk-cpp. so why?
             'Content-Length': txt.length
         },
     };
-    genAWS4Auth(options.headers, this.options);
+    genAWS4Auth(options, txt, this.options);
+    // options.headers['Content-Type'] = 'application/x-www-form-urlencoded'; // added by curl, no use
+    
     var req = https.request(options, function(res){
         res.setEncoding('utf8');
         var body = '';
@@ -271,10 +404,11 @@ function putMedia(options, url, cb){
             'x-amzn-fragment-timecode-type': 'RELATIVE',
             'x-amzn-producer-start-timestamp': Date.now()/1000,
             'x-amzn-stream-name': options.stream,
-            'Content-Type': 'application/x-www-form-urlencoded', // same as sdk-cpp. so why?
             'Expect': '100-continue'
         },
     };
+
+    genAWS4Auth(opt, '', options);
 
     var req = https.request(opt, function(res){
         res.setEncoding('utf8');
@@ -365,3 +499,13 @@ module.exports = {
     MKVBuilder: MKVBuilder,
     genAWS4Auth: genAWS4Auth,
 };
+
+
+// test
+if(require.main === module){
+    function assert(x) {
+        if(!x) throw new Error('assert failed');
+    }
+    assert( hmac('12345', 'abcde', 'hex') == 'f8f78e4c506669fdd116876d08adf809ed7c33585078dcfd4e6fe863b7ea966a' );
+    assert( hash('abcdefgh') == '9c56cc51b374c3ba189210d5b6d4bf57790d351c96c47c02190ecf1e430635ab' );
+}
