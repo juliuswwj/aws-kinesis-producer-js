@@ -267,8 +267,65 @@ test(function(resovle){
     });
 });
 
+
+
+function testserver(){
+    const net = require('net');
+    var fw = fs.openSync('/tmp/test.txt', 'w');
+    var s = net.createServer(function(c){
+        c.write('HTTP/1.0 200 Ok\r\n\r\n');
+
+        var cnt = 0;
+        var itm = setInterval(function(){
+            var ob = {
+                EventType: 'Received',
+                FragmentTimecode: cnt*1000,
+                FragmentNumber: cnt,
+                ErrorId: 0,
+            };
+            c.write(JSON.stringify({Acknowledgement:ob}) + '\r\n');
+        }, 3000);
+
+        var hex = false;
+        c.on('data', function(data){
+            if(!hex){
+                var ptr = data.indexOf('\r\n\r\n');
+                fs.writeSync(fw, '-- HDR\n');
+                if(ptr > 0){
+                    fs.writeSync(fw, data.slice(0, ptr+4).toString());
+                    hex = true;
+                } else {
+                    fs.writeSync(fw, data.toString());
+                }
+                if(!hex) return;
+                data = data.slice(ptr+4);
+            }
+            fs.writeSync(fw, '-- DATA_OUT\n');
+            for(var i=0, l=data.length; i < l; i+=16){
+                var t = i+16<=l ? data.slice(i, i+16) : data.slice(i);
+                fs.writeSync(fw, t.toString('hex'));
+                fs.writeSync(fw, '\n');
+            }
+        });
+
+        c.on('end', function(){
+            clearInterval(itm);
+        });
+    });
+    s.on('error', function(e){
+        console.log('testserver', e);
+    });
+    s.listen(8000, function(){
+        console.log('testserver bind on 8000');
+    });
+}
+
+
+
 // node test.js region keyid key
 if(process.argv.length >= 5) test(function(resolve){
+    //testserver();
+
     var ex = new MKVExtractor(mkvin);
     var itm;
     var s;
