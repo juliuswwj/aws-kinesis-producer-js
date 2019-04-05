@@ -29,19 +29,31 @@ function bedouble(n){
 }
 
 function benum(n){
+    if(n < 0) return new Buffer([0xff]);
+
+    n += 1;
     var b = new Buffer(8);
     b.writeUInt32BE(n/65536/65536, 0); // only / can handle 32+ bits
     b.writeUInt32BE(n&0xffffffff, 4);
+
     if(b[0]) return new Buffer([0xff]);
-    if(b[1] & 0xfe){ b[0] = 1; return b; }
-    if(b[1] || (b[2] & 0xfc)) { b[1] |= 2; return b.slice(1); }
-    if(b[2] || (b[3] & 0xf8)) { b[2] |= 4; return b.slice(2); }
-    if(b[3] || (b[4] & 0xf0)) { b[3] |= 8; return b.slice(3); }
-    if(b[4] || (b[5] & 0xe0)) { b[4] |= 16; return b.slice(4); }
-    if(b[5] || (b[6] & 0xc0)) { b[5] |= 32; return b.slice(5); }
-    if(b[6] || (b[7] & 0x80)) { b[6] |= 64; return b.slice(6); }
-    b[7] |= 0x80;
-    return b.slice(7);
+
+    var c = 0;
+    if(b[1] & 0xfe) c=0;
+    else if(b[1] || (b[2] & 0xfc)) c=1;
+    else if(b[2] || (b[3] & 0xf8)) c=2;
+    else if(b[3] || (b[4] & 0xf0)) c=3;
+    else if(b[4] || (b[5] & 0xe0)) c=4;
+    else if(b[5] || (b[6] & 0xc0)) c=5;
+    else if(b[6] || (b[7] & 0x80)) c=6;
+    else c=7;
+
+    n -= 1;
+    b.writeUInt32BE(n/65536/65536, 0); // only / can handle 32+ bits
+    b.writeUInt32BE(n&0xffffffff, 4);
+
+    b[c] |= 1<<c;
+    return b.slice(c);
 }
 
 function ebml(id, data){
@@ -66,7 +78,7 @@ function randbuf(len){
  * 
  * @param {object} options.v          mandatory
  * @param {string} options.v.codec    optional, default V_MPEG4/ISO/ASP
- * @param {number} options.v.duration mandatory, per frame, in timescale
+ * @param {number} options.v.duration optional, per frame, in timescale
  * @param {number} options.v.width    mandatory
  * @param {number} options.v.height   mandatory
  * @param {Buffer} options.v.data     mandatory, codec private data
@@ -110,30 +122,29 @@ function MKVBuilder(options, cb){
     ];
 
     if(!options.v.codec) options.v.codec = "V_MPEG4/ISO/ASP";
-    var tracks = [
-        ebml(0xAE, Buffer.concat([ // track info
-            ebml(0xD7, beint(1)),   // track number
-            ebml(0x73C5, beint(0x77)), // track uid
-            ebml(0x83, beint(0x01)), // track type, video
-            ebml(0x536E, new Buffer('video')), // track name
-            ebml(0x86, new Buffer(options.v.codec)), // codec info
-            ebml(0x23E383, beint(options.v.duration*options.timescale)), // Duration
-            ebml(0xE0, Buffer.concat([   // Video Info
-                ebml(0xB0, beint(options.v.width)),  // width
-                ebml(0xBA, beint(options.v.height)), // height
-            ])),
-            ebml(0x63A2, options.v.data) // private data
-        ]))
+    var vtrack = [ // track info
+        ebml(0xD7, beint(1)),   // track number
+        ebml(0x73C5, beint(1)), // track uid
+        ebml(0x83, beint(0x01)), // track type, video
+        ebml(0x536E, new Buffer('video')), // track name
+        ebml(0x86, new Buffer(options.v.codec)), // codec info
+        ebml(0xE0, Buffer.concat([   // Video Info
+            ebml(0xB0, beint(options.v.width)),  // width
+            ebml(0xBA, beint(options.v.height)), // height
+        ])),
+        ebml(0x63A2, options.v.data) // private data
     ];
-    this.vduration = options.v.duration;
-    this.aduration = options.v.duration / 2;
+    //if(options.v.duration) vtrack.push( ebml(0x23E383, beint(options.v.duration*options.timescale)) ); // Duration
+    var tracks = [ ebml(0xAE, Buffer.concat(vtrack)) ];
+    this.vduration = options.v.duration || 40;
+    this.aduration = this.vduration / 2;
     if(options.a){
         if(options.a.duration) this.aduration = options.a.duration;
         if(!options.a.codec) options.a.codec = 'A_AAC';
         if(!options.a.channles) options.a.channles = 2;
         tracks.push(ebml(0xAE, Buffer.concat([  // track info
             ebml(0xD7, beint(2)),   // track number
-            ebml(0x73C5, beint(0x78)), // track uid
+            ebml(0x73C5, beint(2)), // track uid
             ebml(0x83, beint(0x02)), // track type, audio
             ebml(0x536E, new Buffer('audio')), // track name
             ebml(0x86, new Buffer(options.a.codec)), // codec info
@@ -187,8 +198,9 @@ MKVBuilder.prototype.putFrame = function(data, type){
     ts -= this.tsbase;
 
     var block = Buffer.concat([beint(0xa3), benum(4 + data.length),
-        benum((type>>8)+1), // track number
+        benum( ((type>>8)+1) & 0xff), // track number
         new Buffer([ts>>8, ts&0xff, type&0xff])]); // sint16 timecode diff, uint8 flags
+    //console.log('block', data.length, block);
     this.data.push(block);
     this.data.push(data);
     this.csize += block.length + data.length;
@@ -214,10 +226,10 @@ function Kinesis(options){
     if(!options.keyid || options.keyid.length != 20){
         throw new Error("Kinesis: invalid options.keyid");
     }
-    if(!options.key || options.key.length != 32){
+    if(!options.key || options.key.length != 40){
         throw new Error("Kinesis: invalid options.key");
     }
-    if(!options.stream || len(options.stream) > 128){
+    if(!options.stream || options.stream.length >= 128){
         throw new Error("Kinesis: invalid options.name");
     }
 
@@ -364,7 +376,7 @@ Kinesis.prototype.getEndPoint = function(cb){
     };
     genAWS4Auth(options, txt, this.options);
     // options.headers['Content-Type'] = 'application/x-www-form-urlencoded'; // added by curl, no use
-    
+
     var req = https.request(options, function(res){
         res.setEncoding('utf8');
         var body = '';
@@ -373,7 +385,7 @@ Kinesis.prototype.getEndPoint = function(cb){
         });
         res.on('end', function(){
             try{
-                cb(null, JSON.parse(ob));
+                cb(null, JSON.parse(body));
             } catch(err) {
                 cb(err);
             }
@@ -386,7 +398,7 @@ Kinesis.prototype.getEndPoint = function(cb){
     req.end();
 }
 
-function putMedia(options, url, cb){
+function putMedia(options, url, cb, cb2){
     // parse https://s-4010bf70.kinesisvideo.us-west-2.amazonaws.com
     var host = url.substring( url.indexOf('//')+2 );  
     var opt = {
@@ -414,12 +426,13 @@ function putMedia(options, url, cb){
         res.setEncoding('utf8');
         res.on('data', function(data){
             var n = data.indexOf('\r\n');
-            cb(null, 'message', n);
+            cb(null, 'message', data.slice(0, n));
         });
         res.on('end', function(){
             cb(null, 'end');
         })
         cb(null, 'connect');
+        cb2();
     });
 
     req.on('error', function(err){
@@ -440,32 +453,87 @@ Kinesis.prototype.start = function(cb){
     }
 
     // queue data, then send it in chunked format
-    var BLOCKSIZE = 16384;
-    var dq = [];
-    var dptr = 0;
+    var options = this.options;
     var req = null;
-    var endian = '';
-    function dosend(){
-        if(dq.length == 0)return;
-        var d = dq[0];
-        if(d.length-dptr > BLOCKSIZE){
-            req.write(endian + BLOCKSIZE.toString(16) + '\r\n');
-            req.write(d.slice(dptr, dptr+BLOCKSIZE-1), dosend);
-            dptr += BLOCKSIZE;
-        } else {
-            req.write(endian + (d.length - dptr).toString(16) + '\r\n');
-            req.write(d.slice(dptr), dosend);
-            dptr = 0;
-            dq.shift();
+    var dq = [];
+    var busy = false;
+    var nl = '\r\n';
+    var BLOCKSIZE = 0x3ff4;
+
+    function sendchunks(data, cb) {
+        var l = data.length;
+        if(l == 0)return;
+
+        var sz = 0;
+        var pos = 0;
+        var st = 0;   // 0 header, 1 data, 2 footer, 3 end
+        for(var i = 0; i < l; i++){
+            sz += data[i].length;
         }
+        var d = data.shift();
+        function send(){
+            var ok = true;
+            var bsz = 0;
+            while(st != 3){
+                if(st == 0){
+                    bsz = sz>BLOCKSIZE ? BLOCKSIZE : sz;
+                    ok = req.write(bsz.toString(16) + nl);
+                    if(!ok) break;
+                    console.log('chunk', bsz);
+                    st = 1;
+                    sz -= bsz;
+                }
+                if(st == 1){
+                    var l = d.length;
+                    if(bsz >= l && pos == 0){
+                        ok = req.write(d);
+                        if(!ok)break;
+                        bsz -= l;
+                        d = data.shift();
+                    } else if(bsz >= l - pos) {
+                        ok = req.write(d.slice(pos));
+                        if(!ok)break;
+                        bsz -= l - pos;
+                        pos = 0;
+                        d = data.shift();
+                    } else {
+                        ok = req.write(d.slice(pos, pos + bsz));
+                        if(!ok)break;
+                        pos += bsz;
+                        bsz = 0;
+                    }
+                    if(bsz == 0) st = 2;
+                }
+                if(st == 2){
+                    if(sz == 0){
+                        req.write(nl, cb);
+                        st = 3;
+                    } else {
+                        ok = req.write(nl);
+                        if(ok) st = 0;
+                    }
+                }
+            }
+            if(!ok) req.once('drain', send);
+        }
+        send();
+    }
+
+    function dosend(){
+        //console.log('dosend', busy, dq.length, req);
+        if(busy || dq.length == 0 || !req) return;
+        options.req = req;
+        busy = true;
+        sendchunks(dq.shift(), function(){
+            busy = false;
+            dosend();
+        });
     }
 
     this.mkv = new MKVBuilder(this.options, function(data){
+        console.log('mkvpush', data.length);
         dq.push(data);
-        if(dq.length == 1 && req){
-            dosend();
-            endian = '\r\n';
-        }
+        dosend();
     });
 
 
@@ -476,7 +544,8 @@ Kinesis.prototype.start = function(cb){
             return; 
         }
         try {
-            req = putMedia(this.options, ob.DataEndpoint, cb);
+            // console.log('getEndPoint', ob);
+            req = putMedia(options, ob.DataEndpoint, cb, dosend);
         }
         catch(err){
             cb(err);
@@ -490,22 +559,19 @@ Kinesis.prototype.start = function(cb){
  */
 Kinesis.prototype.putFrame = function(data, type){
     if(!this.mkv)throw new Error('putFrame: not started');
+    //console.log('putFrame', data.length, type);
     this.mkv.putFrame(data, type);
-}
+};
 
+Kinesis.prototype.end = function(){
+    if(this.options && this.options.req) {
+        this.options.req.end();
+        this.options.req = null;
+    }
+};
 
 module.exports = {
     Kinesis: Kinesis,
     MKVBuilder: MKVBuilder,
     genAWS4Auth: genAWS4Auth,
 };
-
-
-// test
-if(require.main === module){
-    function assert(x) {
-        if(!x) throw new Error('assert failed');
-    }
-    assert( hmac('12345', 'abcde', 'hex') == 'f8f78e4c506669fdd116876d08adf809ed7c33585078dcfd4e6fe863b7ea966a' );
-    assert( hash('abcdefgh') == '9c56cc51b374c3ba189210d5b6d4bf57790d351c96c47c02190ecf1e430635ab' );
-}

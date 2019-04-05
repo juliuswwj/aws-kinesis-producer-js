@@ -1,72 +1,54 @@
 'use strict'
 
 var fs = require('fs');
+var https = require('https');
 var sdk = require('.');
 
 
-// POST /putMedia HTTP/1.1
-// host: s-4010bf70.kinesisvideo.us-west-2.amazonaws.com
-// Accept: */*
-// Authorization: AWS4-HMAC-SHA256 Credential=AKIAQQ5CSGFCFJ55CLH3/20190402/us-west-2/kinesisvideo/aws4_request, SignedHeaders=connection;host;transfer-encoding;user-agent;x-amz-date;x-amzn-fragment-acknowledgment-required;x-amzn-fragment-timecode-type;x-amzn-producer-start-timestamp;x-amzn-stream-name, Signature=61d08f50dd3fb117e3447b5c4230d6a9c5fc1acdbd5d6a2ecb7f244be1d84fb3
-// connection: keep-alive
-// transfer-encoding: chunked
-// user-agent: AWS-SDK-KVS/1.7.9 Clang/10.0.1 Darwin/18.5.0 x86_64
-// X-Amz-Date: 20190402T225203Z
-// x-amzn-fragment-acknowledgment-required: 1
-// x-amzn-fragment-timecode-type: RELATIVE
-// x-amzn-producer-start-timestamp: 1554245523.434
-// x-amzn-stream-name: test1
-// Content-Type: application/x-www-form-urlencoded
-// Expect: 100-continue
-
-var req1 = {
-    method: 'POST',
-    path: '/putMedia',
-    headers: {
-        host: 's-4010bf70.kinesisvideo.us-west-2.amazonaws.com',
-        connection: 'keep-alive',
-        'transfer-encoding': 'chunked',
-        'user-agent': 'AWS-SDK-KVS/1.7.9 Clang/10.0.1 Darwin/18.5.0 x86_64',
-        'x-amz-date': '20190402T225203Z',
-        'x-amzn-fragment-acknowledgment-required': '1',
-        'x-amzn-fragment-timecode-type': 'RELATIVE',
-        'x-amzn-producer-start-timestamp': '1554245523.434',
-        'x-amzn-stream-name': 'test1',
+var tests = [];
+function test(msg, eret, cb){
+    if(cb){
+        var ncb = cb;
+        cb = function(resovle){
+            console.log('test', msg);
+            try {
+                if( ncb() === eret ){
+                    resovle();
+                    return;
+                }
+            }
+            catch(err){
+                if(eret instanceof Error && err.message.indexOf(eret.message) > 0){
+                    resolve();
+                } else {
+                    throw err;
+                }
+            }
+            throw new Error('#result not equal');
+        };
+    } else {
+        if(typeof msg !== 'function') throw "E: call test with single none-Promise parameter";
+        cb = msg;
     }
-};
 
-// POST /describeStream HTTP/1.1
-// host: kinesisvideo.us-west-2.amazonaws.com
-// Accept: */*
-// Authorization: AWS4-HMAC-SHA256 Credential=AKIAQQ5CSGFCFJ55CLH3/20190402/us-west-2/kinesisvideo/aws4_request, SignedHeaders=content-type;host;user-agent;x-amz-date, Signature=879d1e592b14db44a5586858b32b9dfd59703fb32ed0ba8022225bda7ca7beda
-// content-type: application/json
-// user-agent: AWS-SDK-KVS/1.7.9 Clang/10.0.1 Darwin/18.5.0 x86_64
-// X-Amz-Date: 20190404T014442Z
-// Content-Length: 23
-// {"StreamName":"test1"}\n
-var req2 = {
-    method: 'POST',
-    path: '/describeStream',
-    headers: {
-        host: 'kinesisvideo.us-west-2.amazonaws.com',
-        'content-type': 'application/json',
-        'user-agent': 'AWS-SDK-KVS/1.7.9 Clang/10.0.1 Darwin/18.5.0 x86_64',
-        'x-amz-date': '20190404T014442Z',
+    tests.push(cb);
+}
+
+function testrun(){
+    if(tests.length == 0) return;
+    var t = tests.shift();
+
+    function resolve(){
+        process.nextTick(testrun);
     }
-};
 
-
-var options = {
-    service: 'kinesisvideo',
-    region: 'us-west-2',
-    keyid: 'AKIAQQ5CSGFCFJ55CLH3',
-    key: '2dnE4HQ6/lw0Ae0ujgP5TWTWMBhumKujq/tx/xX6'
-};
-
-//sdk.genAWS4Auth(req1, '', options);
-//console.log(req1.headers['Authorization']);
-sdk.genAWS4Auth(req2, '{"StreamName":"test1"}\n', options);
-console.log(req2.headers['Authorization']);
+    try {
+        t(resolve);
+    }
+    catch(err){
+        console.log("****** test failed for " + err.toString());
+    }
+}
 
 
 function MKVExtractor(fname){
@@ -76,8 +58,13 @@ function MKVExtractor(fname){
     if(hdr.id != 0xA45DFA3){
         throw new Error('invalid MKV file');
     }
+    this.options = {};
+    this.baserptr = this.rptr;
 };
 
+MKVExtractor.prototype.reset = function(){
+    this.rptr = this.baserptr;
+};
 
 function getnum(buf){
     var c = 0;
@@ -136,18 +123,18 @@ MKVExtractor.prototype.ebml = function(){
 }
 
 MKVExtractor.prototype.run = function(cb){
-    var options = {};
+    var options = this.options;
     var t = null;
 
     while(true){
         var e = this.ebml();
-        if(e.id == 0) break;
+        if(e.id == 0) return false;
 
         if(e.id == 0x6) {
             t.codec = e.data.toString('utf8');
     
         } else if(e.id == 0x23){
-            cb(options, e.data);
+            return cb(options, e.data);
 
         } else if(e.id == 0x67){
             options.tsbase = getint(e.data);
@@ -178,32 +165,155 @@ MKVExtractor.prototype.run = function(cb){
     }
 }
 
-var fw = fs.openSync('/tmp/test.mkv', 'w');
-var ex = new MKVExtractor('other/sample.mkv');
-var mkv;
+test('aws4', true, function(){
+    // POST /describeStream HTTP/1.1
+    // host: kinesisvideo.us-west-2.amazonaws.com
+    // Accept: */*
+    // Authorization: AWS4-HMAC-SHA256 Credential=AKIAQQ5CSGFCFJ55CLH3/20190402/us-west-2/kinesisvideo/aws4_request, SignedHeaders=content-type;host;user-agent;x-amz-date, Signature=879d1e592b14db44a5586858b32b9dfd59703fb32ed0ba8022225bda7ca7beda
+    // content-type: application/json
+    // user-agent: AWS-SDK-KVS/1.7.9 Clang/10.0.1 Darwin/18.5.0 x86_64
+    // X-Amz-Date: 20190404T014442Z
+    // Content-Length: 23
+    // {"StreamName":"test1"}\n
+    var req = {
+        method: 'POST',
+        path: '/describeStream',
+        headers: {
+            host: 'kinesisvideo.us-west-2.amazonaws.com',
+            'content-type': 'application/json',
+            'user-agent': 'AWS-SDK-KVS/1.7.9 Clang/10.0.1 Darwin/18.5.0 x86_64',
+            'x-amz-date': '20190404T014442Z',
+        }
+    };
 
-function write(data, push){
-    console.log('write', data.length);
-    for(var i=0, l=data.length; i < l; i++){
-        fs.writeSync(fw, data[i]);
+
+    var options = {
+        service: 'kinesisvideo',
+        region: 'us-west-2',
+        keyid: 'AKIAQQ5CSGFCFJ55CLH3',
+        key: '2dnE4HQ6/lw0Ae0ujgP5TWTWMBhumKujq/tx/xX6'
+    };
+
+    sdk.genAWS4Auth(req, '{"StreamName":"test1"}\n', options);
+    return req.headers['Authorization'].indexOf('879d1e592b14db44a5586858b32b9dfd59703fb32ed0ba8022225bda7ca7beda') > 0;
+});
+
+var mkvin = '/tmp/sample.mkv';
+var mkvout = '/tmp/test.mkv';
+
+test(function(resovle){
+    if( ! fs.existsSync(mkvin) ){
+        console.log('downloading', mkvin);
+        https.get("https://sample-videos.com/video123/mkv/720/big_buck_bunny_720p_30mb.mkv", function(response) {
+            const file = fs.createWriteStream(mkvin);
+            response.pipe(file);
+            response.on('end', resovle);
+        });
+    } else {
+        resovle();
     }
-}
-
-ex.run(function(options, data){
-    if(!options.stream){
-        options.v.duration /= 1000*1000;
-        options.stream = 'test';
-        mkv = sdk.MKVBuilder(options, write);
-    } 
-    var n = getnum(data);
-    var type = data[n[1] + 2];
-    data = data.slice(n[1] + 3);
-
-    if(n[0] == 2) type |= 0x100;
-    mkv.putFrame(data, type);
 });
 
 
-fs.closeSync(fw);
+test('convert', true, function(){
+    var fw = fs.openSync(mkvout, 'w');
+    var ex = new MKVExtractor(mkvin);
+    
+    function write(data){
+        //console.log('write', data.length);
+        for(var i=0, l=data.length; i < l; i++){
+            fs.writeSync(fw, data[i]);
+        }
+    }
 
-console.log('done');
+    var mkv;
+    function writecb(options, data){
+        if(!options.stream){
+            options.v.duration /= 1000*1000;
+            options.stream = 'test';
+            mkv = sdk.MKVBuilder(options, write);
+        } 
+        var n = getnum(data);
+        var type = data[n[1] + 2];
+        data = data.slice(n[1] + 3);
+    
+        if(n[0] == 2) type |= 0x100;
+        mkv.putFrame(data, type);
+        return true;
+    };
+
+    while(ex.run(writecb)){
+        // ...
+    }
+    fs.closeSync(fw);
+    return true;
+});
+
+test(function(resovle){
+    const { spawn } = require('child_process');
+
+    console.log('run mkvinfo');
+
+    var bcnt = 0;
+    const mkvinfo = spawn('mkvinfo', ['-v', mkvout]);
+    mkvinfo.stdout.on('data', (data) => {
+        if(data.indexOf('SimpleBlock') > 0) bcnt += 1;
+        if(data.indexOf('Unknown element') > 0)
+            throw new Error('invalid mkvinfo result');
+    });
+    mkvinfo.stdout.on('end', (code) => {
+        if(bcnt < 50) throw new Error('invalid mkvinfo result');
+        resovle();
+    });
+});
+
+// node test.js region keyid key
+if(process.argv.length >= 5) test(function(resolve){
+    var ex = new MKVExtractor(mkvin);
+    var itm;
+    var s;
+    
+    function showmessage(err, msg, data){
+        if(err){
+            console.log('E:', err);
+            return;
+        }
+        console.log('--', msg, data);
+        if(msg == 'end'){
+            s.end();
+            clearInterval(itm);
+            resolve();
+        }
+    }
+
+    function writecb(options, data){
+        if(!options.stream){
+            options.v.duration /= 1000*1000;
+            options.stream = 'test1';
+            options.region = process.argv[2];
+            options.keyid = process.argv[3];
+            options.key = process.argv[4];
+            s = sdk.Kinesis(options);
+            s.start(showmessage);
+        } 
+        var n = getnum(data);
+        var type = data[n[1] + 2];
+        data = data.slice(n[1] + 3);
+    
+        if(n[0] == 2) type |= 0x100;
+        s.putFrame(data, type);
+        return true;
+    };
+
+    itm = setInterval(function(){
+        if(!ex.run(writecb)){
+            clearInterval(itm);
+            resolve();
+        }
+    }, 30);
+});
+
+
+console.log('start');
+testrun();
+
