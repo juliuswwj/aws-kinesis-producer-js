@@ -4,7 +4,6 @@ var fs = require('fs');
 var https = require('https');
 var sdk = require('.');
 
-
 var tests = [];
 function test(msg, eret, cb){
     if(cb){
@@ -46,124 +45,11 @@ function testrun(){
         t(resolve);
     }
     catch(err){
+        throw err;
         console.log("****** test failed for " + err.toString());
     }
 }
 
-
-function MKVExtractor(fname){
-    this.fd = fs.openSync(fname, 'r');
-    this.rptr = 0;
-    var hdr = this.ebml();
-    if(hdr.id != 0xA45DFA3){
-        throw new Error('invalid MKV file');
-    }
-    this.options = {};
-    this.baserptr = this.rptr;
-};
-
-MKVExtractor.prototype.reset = function(){
-    this.rptr = this.baserptr;
-};
-
-function getnum(buf){
-    var c = 0;
-    var i = 0;
-    for(i=0; i<8; i++){
-        if(buf[i] == 0) continue;
-        if(buf[i] == 0xff) {
-            return [-1, i+1];
-        }
-        if(buf[i] & 128) { c = 0; break; }
-        if(buf[i] & 64) { c = 1; break; }
-        if(buf[i] & 32) { c = 2; break; }
-        if(buf[i] & 16) { c = 3; break; }
-        if(buf[i] & 8) { c = 4; break; }
-        if(buf[i] & 4) { c = 5; break; }
-        if(buf[i] & 2) { c = 6; break; }
-        if(buf[i] & 1) { c = 7; break; }
-    }
-    var v = buf[i] & ((1<<(7-c))-1);
-    i += 1;
-    var rc = i + c;
-    while(c > 0){
-        v = v * 256 + buf[i];
-        c -= 1;
-        i += 1;
-    }
-    //console.log('getint', buf, v.toString(16));
-    return [v, rc];
-}
-
-function getint(buf){
-    if(buf.length == 1) return buf[0];
-    if(buf.length == 2) return buf.readUInt16BE(0);
-    if(buf.length == 4) return buf.readUInt32BE(0);
-    return -1;
-}
-
-
-MKVExtractor.prototype.getnum = function(){
-    var buf = new Buffer(8);
-    fs.readSync(this.fd, buf, 0, buf.length, this.rptr);
-    var v = getnum(buf);
-    this.rptr += v[1];
-    return v[0];
-}
-
-MKVExtractor.prototype.ebml = function(){
-    var id = this.getnum();
-    var len = this.getnum();
-    if(len <= 0 || id == 0x8538067 || id == 0x654AE6B || id == 0xF43B675 || id == 0x2e) // dont read stream, tracks, cluster, track data
-        return {id: id, len: len};
-    var data = new Buffer(len);
-    fs.readSync(this.fd, data, 0, data.length, this.rptr);
-    this.rptr += len;
-    return {id: id, data: data};
-}
-
-MKVExtractor.prototype.run = function(cb){
-    var options = this.options;
-    var t = null;
-
-    while(true){
-        var e = this.ebml();
-        if(e.id == 0) return false;
-
-        if(e.id == 0x6) {
-            t.codec = e.data.toString('utf8');
-    
-        } else if(e.id == 0x23){
-            return cb(options, e.data);
-
-        } else if(e.id == 0x67){
-            options.tsbase = getint(e.data);
-
-        } else if(e.id == 0x57) {
-            t = {};
-            if(getint(e.data) == 1){
-                options.v = t;
-            } else {
-                options.a = t;
-            }
-        }
-        else if(e.id == 0x60) {
-            t.width = getint(e.data.slice(2, 4));
-            t.height = getint(e.data.slice(6, 8));
-        }
-        else if(e.id == 0x61) {
-            t.channels = e.data[2]; // 9f 81
-            t.freq = e.data.slice(5).readDoubleBE();
-        }
-        else if(e.id == 0x23a2){
-            t.data = e.data;
-        }
-        else if(e.id == 0x3E383){
-            t.duration = getint(e.data);
-        } 
-        //else console.log(e);
-    }
-}
 
 test('aws4', true, function(){
     // POST /describeStream HTTP/1.1
@@ -205,7 +91,7 @@ test(function(resovle){
     if( ! fs.existsSync(mkvin) ){
         console.log('downloading', mkvin);
         https.get("https://sample-videos.com/video123/mkv/720/big_buck_bunny_720p_30mb.mkv", function(response) {
-            const file = fs.createWriteStream(mkvin);
+            var file = fs.createWriteStream(mkvin);
             response.pipe(file);
             response.on('end', resovle);
         });
@@ -214,10 +100,19 @@ test(function(resovle){
     }
 });
 
+function putData(mkv, data)
+{
+    var n = data.readUInt8(0) & 0x7f;
+    var type = data.readUInt8(3);
+    data = data.slice(4);
+
+    if(n == 2) type |= 0x100;
+    mkv.putFrame(data, type);
+}
 
 test('convert', true, function(){
     var fw = fs.openSync(mkvout, 'w');
-    var ex = new MKVExtractor(mkvin);
+    var ex = new sdk.MKVExtractor(mkvin);
     
     function write(data){
         //console.log('write', data.length);
@@ -229,16 +124,10 @@ test('convert', true, function(){
     var mkv;
     function writecb(options, data){
         if(!options.stream){
-            options.v.duration /= 1000*1000;
             options.stream = 'test';
             mkv = sdk.MKVBuilder(options, write);
-        } 
-        var n = getnum(data);
-        var type = data[n[1] + 2];
-        data = data.slice(n[1] + 3);
-    
-        if(n[0] == 2) type |= 0x100;
-        mkv.putFrame(data, type);
+        }
+        putData(mkv, data);
         return true;
     };
 
@@ -250,18 +139,25 @@ test('convert', true, function(){
 });
 
 test(function(resovle){
-    const { spawn } = require('child_process');
+    try{
+        var spawn = require('child_process').spawn;
+    }
+    catch(err){
+        console.log('iotjs');
+        resovle();
+        return;
+    }
 
     console.log('run mkvinfo');
 
     var bcnt = 0;
-    const mkvinfo = spawn('mkvinfo', ['-v', mkvout]);
-    mkvinfo.stdout.on('data', (data) => {
+    var mkvinfo = spawn('mkvinfo', ['-v', mkvout]);
+    mkvinfo.stdout.on('data', function(data){
         if(data.indexOf('SimpleBlock') > 0) bcnt += 1;
         if(data.indexOf('Unknown element') > 0)
             throw new Error('invalid mkvinfo result');
     });
-    mkvinfo.stdout.on('end', (code) => {
+    mkvinfo.stdout.on('end', function() {
         if(bcnt < 50) throw new Error('invalid mkvinfo result');
         resovle();
     });
@@ -270,7 +166,7 @@ test(function(resovle){
 
 
 function testserver(){
-    const net = require('net');
+    var net = require('net');
     var fw = fs.openSync('/tmp/test.txt', 'w');
     var s = net.createServer(function(c){
         c.write('HTTP/1.0 200 Ok\r\n\r\n');
@@ -321,12 +217,10 @@ function testserver(){
 }
 
 
-
-// node test.js region keyid key
-if(process.argv.length >= 5) test(function(resolve){
+test(function(resolve){
     //testserver();
 
-    var ex = new MKVExtractor(mkvin);
+    var ex = new sdk.MKVExtractor(mkvin);
     var itm;
     var s;
     
@@ -345,20 +239,12 @@ if(process.argv.length >= 5) test(function(resolve){
 
     function writecb(options, data){
         if(!options.stream){
-            options.v.duration /= 1000*1000;
-            options.stream = 'test1';
-            options.region = process.argv[2];
-            options.keyid = process.argv[3];
-            options.key = process.argv[4];
+            var cfg = JSON.parse( fs.readFileSync('/tmp/aws.cfg') );
+            for(var n in cfg) options[n] = cfg[n];
             s = sdk.Kinesis(options);
             s.start(showmessage);
         } 
-        var n = getnum(data);
-        var type = data[n[1] + 2];
-        data = data.slice(n[1] + 3);
-    
-        if(n[0] == 2) type |= 0x100;
-        s.putFrame(data, type);
+        putData(s, data);
         return true;
     };
 

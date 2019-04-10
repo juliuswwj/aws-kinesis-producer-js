@@ -1,0 +1,1382 @@
+diff --git a/cmake/config/noarch-linux.cmake b/cmake/config/noarch-linux.cmake
+index a856848..1e92906 100644
+--- a/cmake/config/noarch-linux.cmake
++++ b/cmake/config/noarch-linux.cmake
+@@ -1,15 +1,2 @@
+-# Copyright 2018-present Samsung Electronics Co., Ltd. and other contributors
+-#
+-# Licensed under the Apache License, Version 2.0 (the "License");
+-# you may not use this file except in compliance with the License.
+-# You may obtain a copy of the License at
+-#
+-#     http://www.apache.org/licenses/LICENSE-2.0
+-#
+-# Unless required by applicable law or agreed to in writing, software
+-# distributed under the License is distributed on an "AS IS" BASIS
+-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-# See the License for the specific language governing permissions and
+-# limitations under the License.
+-
+ set(CMAKE_SYSTEM_NAME Linux)
++set(CMAKE_C_COMPILER gcc)
+diff --git a/cmake/mbedtls.cmake b/cmake/mbedtls.cmake
+index 0a8e841..d68236d 100644
+--- a/cmake/mbedtls.cmake
++++ b/cmake/mbedtls.cmake
+@@ -101,5 +101,5 @@ else()
+   # FIXME:
+   #       Remove this workaround when the related bug is fixed in
+   #       mbedtls. https://github.com/ARMmbed/mbedtls/issues/1550
+-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS_BCK}")
++  #set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS_BCK}")
+ endif()
+diff --git a/config/mbedtls/config-for-iotjs.h b/config/mbedtls/config-for-iotjs.h
+index 6581586..c400d46 100644
+--- a/config/mbedtls/config-for-iotjs.h
++++ b/config/mbedtls/config-for-iotjs.h
+@@ -769,8 +769,11 @@
+  *
+  * This module is required for X.509 certificate parsing.
+  */
+-#define MBEDTLS_X509_CRT_PARSE_C
+-
++#define  MBEDTLS_X509_CRT_PARSE_C
++#define MBEDTLS_PK_WRITE_C
++#define MBEDTLS_X509_CSR_WRITE_C
++#define MBEDTLS_X509_CREATE_C
++#define MBEDTLS_DEBUG_C
+ /* \} name SECTION: mbed TLS modules */
+ 
+ #endif /* MBEDTLS_CONFIG_H */
+diff --git a/src/iotjs_uv_handle.c b/src/iotjs_uv_handle.c
+index defa162..f4d74a3 100644
+--- a/src/iotjs_uv_handle.c
++++ b/src/iotjs_uv_handle.c
+@@ -61,8 +61,9 @@ void iotjs_uv_handle_close(uv_handle_t* handle, OnCloseHandler close_handler) {
+     DDLOG("Attempt to close uninitialized or already closed handle");
+     return;
+   }
+-
+   iotjs_uv_handle_data* handle_data = IOTJS_UV_HANDLE_DATA(handle);
++  int off = (uint8_t*)handle_data - (uint8_t*)handle;
++  if(off < 8 || off > 1024)return;
+   handle_data->on_close_cb = close_handler;
+   uv_close(handle, iotjs_uv_handle_close_processor);
+-}
++}
+\ No newline at end of file
+diff --git a/src/js/buffer.js b/src/js/buffer.js
+index e90f815..2569fe8 100644
+--- a/src/js/buffer.js
++++ b/src/js/buffer.js
+@@ -364,12 +364,18 @@ function from(value, encoding, length) {
+   'a string, Buffer, ArrayBuffer, Array, or array-like object');
+ }
+ 
+-
+ /* Register the Buffer object back to the native C
+  * so the other side can get the prototype in a consistent
+  * and safe manner.
+  */
+-native.Buffer = Buffer;
++native.Buffer =  Buffer;
++
++Buffer.fromNumber = native.fromNumber;
++Buffer.fromEBML = native.fromEBML;
++Buffer.toENum = native.toENum;
++Buffer.toNumber = native.toNumber;
++Buffer.fromDouble = native.fromDouble;
++Buffer.toDouble = native.toDouble;
+ 
+ module.exports = Buffer;
+ module.exports.Buffer = Buffer;
+diff --git a/src/js/crypto.js b/src/js/crypto.js
+index 81c7df5..58f7ad3 100644
+--- a/src/js/crypto.js
++++ b/src/js/crypto.js
+@@ -13,125 +13,25 @@
+  * limitations under the License.
+  */
+ 
+-var shaTypes = {
+-  'sha1': 4,
+-  'sha256': 6,
+-};
+-
+-var hashes = ['sha1', 'sha256'];
+-
+-function Verify(signtype) {
+-  if (!(this instanceof Verify)) {
+-    return new Verify(signtype);
+-  }
+-
+-  signtype = signtype.toLowerCase();
+ 
+-  if (hashes.indexOf(signtype) < 0) {
+-    throw new Error('Unknown signing algorithm.' +
+-                    'Please use crypto.getSignatures()');
+-  }
+-
+-  Object.defineProperty(this, 'hashtype', {
+-    // defaults to writable: false, configurable: false
+-    value: signtype,
+-    enumerable: true,
+-  });
++function Crypto(name, key) {
++    native.hashBind(this, name, key);
+ }
+ 
+-Verify.prototype.update = function(data) {
+-  if (this.data) {
+-    if (Buffer.isBuffer(data)) {
+-      this.data = Buffer.concat([this.data, data]);
+-      return;
+-    }
+-
+-    this.data = Buffer.concat([this.data, new Buffer(data)]);
+-    return;
+-  }
+-
+-  if (Buffer.isBuffer(data)) {
+-    this.data = data;
+-    return;
+-  }
+-
+-  this.data = new Buffer(data);
++Crypto.prototype.update = function (data) {
++    return native.hashUpdate(this, data);
+ };
+ 
+-Verify.prototype.verify = function(publicKey, signature) {
+-  if (this.data) {
+-    var type = shaTypes[this.hashtype];
+-    var hash = native.shaEncode(this.data, type);
+-    return native.rsaVerify(type, hash, publicKey, signature);
+-  }
+-
+-  throw new Error('verify shouldn\'t be called on an empty Verify');
++Crypto.prototype.digest = function (encode) {
++    var ret = native.hashDigest(this);
++    if (encode) ret = ret.toString(encode);
++    return ret;
+ };
+ 
+-function Hash(hashtype) {
+-  if (!(this instanceof Hash)) {
+-    return new Hash(hashtype);
+-  }
+-
+-  if (hashes.indexOf(hashtype) < 0) {
+-    throw new Error('Unknown hashing algorithm. Please use crypto.getHashes()');
+-  }
+-  Object.defineProperty(this, 'hashtype', {
+-    value: hashtype,
+-    writable: false,
+-    enumerable: true,
+-  });
+-}
+-
+-Hash.prototype.update = function(data) {
+-  if (this.data) {
+-    if (Buffer.isBuffer(data)) {
+-      this.data = Buffer.concat(this.data, data);
+-      return;
+-    }
+-
+-    this.data = Buffer.concat([this.data, new Buffer(data)]);
+-    return;
+-  }
+-  this.data = new Buffer(data);
++Crypto.prototype.verify = function (publicKey, signature) {
++    return native.rsaVerify(this, publicKey, signature);
+ };
+ 
+-Hash.prototype.digest = function(encoding) {
+-  if (this._finished) {
+-    throw new Error('Digest can not be called twice on the same Hash object');
+-  }
+-
+-  var result;
+-  var type = shaTypes[this.hashtype];
+-  result = native.shaEncode(this.data, type);
+-
+-  if (encoding == 'base64') {
+-    result = native.base64Encode(result);
+-  } else if (encoding == 'hex') {
+-    result = result.toString('hex');
+-  }
+-
+-  Object.defineProperty(this, '_finished', {
+-    value: true,
+-    writable: false,
+-    enumerable: false,
+-  });
+-
+-  return result;
+-};
+-
+-function getHashes() {
+-  return hashes;
+-}
+-
+-function createHash(hashtype) {
+-  return new Hash(hashtype);
+-}
+-
+-function createVerify(signtype) {
+-  return new Verify(signtype);
+-}
+-
+-exports.createHash = createHash;
+-exports.getHashes = getHashes;
+-exports.createVerify = createVerify;
++exports.createHash = function(name) { return new Crypto(name); }
++exports.createHmac = function(name, key) { return new Crypto(name, key); }
++exports.createVerify = function(name) { return new Crypto(name); }
+diff --git a/src/js/fs.js b/src/js/fs.js
+index 6080b7a..f41c2df 100644
+--- a/src/js/fs.js
++++ b/src/js/fs.js
+@@ -135,7 +135,23 @@ fs.readSync = function(fd, buffer, offset, length, position) {
+ 
+ 
+ fs.write = function(fd, buffer, offset, length, position, callback) {
+-  if (util.isFunction(position)) {
++  if (util.isFunction(offset)) {
++    callback = offset;
++    offset = 0;
++    length = buffer.length;
++    position = -1; // write at current position.
++  } else if (util.isNullOrUndefined(offset)) {
++    offset = 0;
++    length = buffer.length;
++    position = -1; // write at current position.
++  } else if (util.isFunction(length)) {
++    callback = length;
++    length = buffer.length - offset;
++    position = -1; // write at current position.
++  } else if (util.isNullOrUndefined(length)) {
++    length = buffer.length - offset;
++    position = -1; // write at current position.
++  } else if (util.isFunction(position)) {
+     callback = position;
+     position = -1; // write at current position.
+   } else if (util.isNullOrUndefined(position)) {
+@@ -158,7 +174,14 @@ fs.write = function(fd, buffer, offset, length, position, callback) {
+ 
+ 
+ fs.writeSync = function(fd, buffer, offset, length, position) {
+-  if (util.isNullOrUndefined(position)) {
++  if (util.isNullOrUndefined(offset)) {
++    offset = 0;
++    length = buffer.length;
++    position = -1; // write at current position.
++  } else if (util.isNullOrUndefined(length)) {
++    length = buffer.length - offset;
++    position = -1; // write at current position.
++  } else if (util.isNullOrUndefined(position)) {
+     position = -1; // write at current position.
+   }
+ 
+diff --git a/src/js/http_client.js b/src/js/http_client.js
+index 4d43747..96f63a9 100644
+--- a/src/js/http_client.js
++++ b/src/js/http_client.js
+@@ -59,17 +59,26 @@ util.inherits(ClientRequest, OutgoingMessage);
+ 
+ exports.ClientRequest = ClientRequest;
+ 
++ClientRequest.prototype.write = function(chunk, encoding, callback) {
++  var self = this;
++  if(!self.parser){
++    setupConnection(this);
++
++    this.socket.connect(this.options, function() {
++      self._connected = true;
++      OutgoingMessage.prototype.write.call(self); // push
++    });
++  }
++  return OutgoingMessage.prototype.write.call(self, chunk, encoding, callback);
++};
++
+ ClientRequest.prototype.end = function(data, encoding, callback) {
+   var self = this;
+ 
+-  // connect server.
+-  this.socket.connect(this.options, function() {
+-    self._connected = true;
+-    OutgoingMessage.prototype.end.call(self, data, encoding, callback);
++  
++  return self.write(data, encoding, function(){
++    OutgoingMessage.prototype.end.call(self, callback);
+   });
+-
+-  // setup connection information.
+-  setupConnection(this);
+ };
+ 
+ function setupConnection(req) {
+@@ -168,7 +177,7 @@ function parserOnIncomingClient(res/* , shouldKeepAlive */) {
+   var socket = this.socket;
+   var req = socket._httpMessage;
+ 
+-  if (req.res) {
++  if (req.res && req.res.statusCode !== 100) {
+     // server sent responses twice.
+     socket.destroy();
+     return false;
+diff --git a/src/js/http_common.js b/src/js/http_common.js
+index e207865..0d0da2b 100644
+--- a/src/js/http_common.js
++++ b/src/js/http_common.js
+@@ -32,9 +32,7 @@ exports.createHTTPParser = function(type) {
+ function parserOnMessageComplete() {
+   var stream = this.incoming;
+ 
+-  if (!stream) {
+-    return;
+-  }
++  if(!stream || stream.statusCode == 100) return;
+ 
+   stream.complete = true;
+   // no more data from incoming, stream will emit 'end' event
+diff --git a/src/js/http_outgoing.js b/src/js/http_outgoing.js
+index 8ffa696..c355d35 100644
+--- a/src/js/http_outgoing.js
++++ b/src/js/http_outgoing.js
+@@ -26,18 +26,17 @@ function OutgoingMessage() {
+   this._hasBody = true;
+ 
+   this.finished = false;
+-  this._sentHeader = false;
+   this._connected = false;
++  this._chunked = false;
++  this._sending = 0;  // 0: none,  1: idle,  2: busy, 3: drain required
+ 
+-  // storage for chunks when there is no connection established
++  // storage for chunks
+   this._chunks = [];
+ 
+   this.socket = null;
+-  // response header string : same 'content' as this._headers
+-  this._header = null;
++
+   // response header obj : (key, value) pairs
+   this._headers = {};
+-
+ }
+ 
+ util.inherits(OutgoingMessage, stream.Writable);
+@@ -60,11 +59,6 @@ OutgoingMessage.prototype.end = function(data, encoding, callback) {
+     return false;
+   }
+ 
+-  // flush header
+-  if (!this._header) {
+-    this._implicitHeader();
+-  }
+-
+   if (data) {
+     this.write(data, encoding);
+   }
+@@ -81,10 +75,15 @@ OutgoingMessage.prototype.end = function(data, encoding, callback) {
+   // the connection. On the other hand emitting 'finish' event from http does
+   // not neccessarily imply end of data transmission since there might be
+   // another segment of data when connection is 'Keep-Alive'.
+-  this._send('', function() {
+-    self.emit('finish');
+-  });
+ 
++  var self = this;
++  function callfinish(){
++    if(this._sending === 1) self.emit('finish');
++    else self.once('sent', callfinish);
++  }
++  
++  this._send();
++  callfinish();
+ 
+   this.finished = true;
+ 
+@@ -100,43 +99,55 @@ OutgoingMessage.prototype._send = function(chunk, encoding, callback) {
+     callback = encoding;
+   }
+ 
+-  if (!this._sentHeader) {
+-    this._chunks.push(this._header + '\r\n');
+-    this._sentHeader = true;
+-  }
++  var self = this;
+ 
+-  if (!this._connected) {
+-    this._chunks.push(chunk);
+-    return false;
+-  } else {
+-    while (this._chunks.length) {
+-      this.socket.write(this._chunks.shift(), encoding, callback);
+-    }
++  if (self._sending === 0 && self._chunks.length === 0) {
++    self._implicitHeader(); // will push _chunks
+   }
+ 
+-  if (this.socket) {
+-    return this.socket.write(chunk, encoding, callback);
++  if(typeof chunk === 'string') chunk = new Buffer(chunk, encoding);
++  if(chunk){
++    if(self._chunked) self._chunks.push(new Buffer(chunk.length.toString(16) + '\r\n'));
++    self._chunks.push(chunk);
++    if(self._chunked) self._chunks.push(new Buffer('\r\n'));
++    if(callback) self.once('sent', callback);
+   }
+-
+-  return false;
+-};
++  if (!self._connected || self._chunks.length === 0)return true;
+ 
+ 
+-OutgoingMessage.prototype.write = function(chunk, encoding, callback) {
+-  if (!this._header) {
+-    this._implicitHeader();
++  function dosend(){
++    if(self._chunks.length === 0){
++      var t = self._sending;
++      self._sending = 1;
++      self.emit('sent'); // will call function
++      if(t === 3) self.emit('drain');
++      return;
++    }
++    var chunk = self._chunks.shift();
++    self.socket.write(chunk, dosend);
+   }
+ 
+-  if (!this._hasBody) {
++  if(self._sending <= 1){
++    self._sending = 2;
++    dosend();
+     return true;
+   }
++  if(self._sending == 2 && self._chunks.length < 8) return true;
++  self._sending = 3;
++  return false;
++};
+ 
++
++OutgoingMessage.prototype.write = function(chunk, encoding, callback) {
++  if (!this._hasBody) return true;
+   return this._send(chunk, encoding, callback);
+ };
+ 
+ 
+ // Stringfy header fields of _headers into _header
+ OutgoingMessage.prototype._storeHeader = function(statusLine) {
++  if(this._sending > 0 || this._chunks.length > 0) return false;
++
+   var headerStr = '';
+ 
+   var keys;
+@@ -145,11 +156,13 @@ OutgoingMessage.prototype._storeHeader = function(statusLine) {
+     for (var i=0; i<keys.length; i++) {
+       var key = keys[i];
+       headerStr += key + ': ' + this._headers[key] + '\r\n';
++      if(key === 'transfer-encoding' && this._headers[key] === 'chunked') 
++        this._chunked = true;
+     }
+   }
++  this._chunks.push( new Buffer(statusLine + headerStr + '\r\n', 'utf8') );
+ 
+-  this._header = statusLine + headerStr;
+-
++  return true;
+ };
+ 
+ 
+diff --git a/src/modules/iotjs_module_buffer.c b/src/modules/iotjs_module_buffer.c
+index c70f737..e2d77b3 100644
+--- a/src/modules/iotjs_module_buffer.c
++++ b/src/modules/iotjs_module_buffer.c
+@@ -761,8 +761,272 @@ JS_FUNCTION(FromArrayBuffer) {
+ }
+ 
+ 
++inline static unsigned xi(unsigned n, uint8_t* buf)
++{
++  unsigned sz = n<0x100 ? 1 : n<0x10000 ? 2 : n<0x1000000 ? 3 : 4;
++  if(!buf) return sz;
++
++  unsigned ret = sz;
++
++  // BE mode
++  while(sz){
++    sz -= 1;
++    buf[sz] = n & 0xff;
++    n >>= 8;
++  }
++  return ret;
++}
++
++static unsigned xn(int64_t n, uint8_t* buf)
++{
++  if(n < 0){
++    if(buf)buf[0] = 0xff;
++    return 1;
++  }
++  if(n<(1L<<7)-1){
++    if(buf)buf[0] = 0x80 | (uint8_t)n;
++    return 1;
++  }
++  if(n<(1L<<14)-1){
++    if(buf){
++      buf[1] = (uint8_t)n;
++      buf[0] = 0x40 | (uint8_t)(n>>8);
++    }
++    return 2;
++  }
++  if(n<(1L<<21)-1){
++    if(buf){
++      buf[2] = (uint8_t)n;
++      buf[1] = (uint8_t)(n>>8);
++      buf[0] = 0x20 | (uint8_t)(n>>16);
++    }
++    return 3;
++  }
++  if(n<(1L<<28)-1){
++    if(buf){
++      buf[3] = (uint8_t)n;
++      buf[2] = (uint8_t)(n>>8);
++      buf[1] = (uint8_t)(n>>16);
++      buf[0] = 0x10 | (uint8_t)(n>>24);
++    }
++    return 4;
++  }
++  if(n<(1L<<35)-1){
++    if(buf){
++      buf[4] = (uint8_t)n;
++      buf[3] = (uint8_t)(n>>8);
++      buf[2] = (uint8_t)(n>>16);
++      buf[1] = (uint8_t)(n>>24);
++      buf[0] = 0x8 | (uint8_t)(n>>32);
++    }
++    return 5;
++  }
++  if(n<(1L<<42)-1){
++    if(buf){
++      buf[5] = (uint8_t)n;
++      buf[4] = (uint8_t)(n>>8);
++      buf[3] = (uint8_t)(n>>16);
++      buf[2] = (uint8_t)(n>>24);
++      buf[1] = (uint8_t)(n>>32);
++      buf[0] = 0x4 | (uint8_t)(n>>40);
++    }
++    return 6;
++  }
++  if(n<(1L<<49)-1){
++    if(buf){
++      buf[6] = (uint8_t)n;
++      buf[5] = (uint8_t)(n>>8);
++      buf[4] = (uint8_t)(n>>16);
++      buf[3] = (uint8_t)(n>>24);
++      buf[2] = (uint8_t)(n>>32);
++      buf[1] = (uint8_t)(n>>40);
++      buf[0] = 0x2 | (uint8_t)(n>>48);
++    }
++    return 7;
++  }
++  if(n<(1L<<56)-1){
++    if(buf){
++      buf[7] = (uint8_t)n;
++      buf[6] = (uint8_t)(n>>8);
++      buf[5] = (uint8_t)(n>>16);
++      buf[4] = (uint8_t)(n>>24);
++      buf[3] = (uint8_t)(n>>32);
++      buf[2] = (uint8_t)(n>>40);
++      buf[1] = (uint8_t)(n>>48);
++      buf[0] = 1;
++    }
++    return 8;
++  }
++  if(buf)buf[0] = 0xff;
++  return 1;
++}
++
++
++JS_FUNCTION(FromNumber) {
++  JS_CHECK_ARGS(1, number);
++
++  unsigned n = (unsigned)JS_GET_ARG(0, number);
++  unsigned sz = xi(n, NULL);
++  jerry_value_t jret = iotjs_bufferwrap_create_buffer(sz);
++  iotjs_bufferwrap_t* ret = iotjs_jbuffer_get_bufferwrap_ptr(jret);
++  xi(n, (uint8_t*)ret->buffer);
++  return jret;
++}
++
++JS_FUNCTION(FromEBML) {
++  JS_CHECK_ARGS(2, number, any);
++
++  // alreay encoded id
++  unsigned id = (unsigned)JS_GET_ARG(0, number);
++  unsigned isz = xi(id, NULL);
++
++  // [ID, invalid]
++  if(jerry_value_is_null(jargv[1])){
++    jerry_value_t jret = iotjs_bufferwrap_create_buffer(isz+1);
++    iotjs_bufferwrap_t* ret = iotjs_jbuffer_get_bufferwrap_ptr(jret);
++    xi(id, (uint8_t*)ret->buffer);
++    ret->buffer[isz] = 0xff;
++    return jret;
++  }
++  if(jerry_value_is_number(jargv[1])){
++    int64_t n = (int64_t)JS_GET_ARG(1, number);
++    if(n < 0){
++      // [ID, LENGTH]
++      n = 0 - n;
++      unsigned nsz = xn(n, NULL);
++      jerry_value_t jret = iotjs_bufferwrap_create_buffer(isz+nsz);
++      iotjs_bufferwrap_t* ret = iotjs_jbuffer_get_bufferwrap_ptr(jret);
++      xi(id, (uint8_t*)ret->buffer);
++      xn(n, (uint8_t*)ret->buffer+isz);
++      return jret;
++    }
++    // [ID, LENGTH, INT]
++    unsigned nsz = xi((unsigned)n, NULL);
++    unsigned lsz = xn(nsz, NULL);
++    jerry_value_t jret = iotjs_bufferwrap_create_buffer(isz+lsz+nsz);
++    iotjs_bufferwrap_t* ret = iotjs_jbuffer_get_bufferwrap_ptr(jret);
++    xi(id, (uint8_t*)ret->buffer);
++    xn(nsz, (uint8_t*)ret->buffer+isz);
++    xi((unsigned)n, (uint8_t*)ret->buffer+isz+lsz);
++    return jret;
++  }
++
++  // [ID, LENGTH, BUF]
++  iotjs_tmp_buffer_t vt;
++  iotjs_jval_as_tmp_buffer(jargv[1], &vt);
++  if (jerry_value_is_error(vt.jval)) return vt.jval;
++
++  unsigned lsz = xn(vt.length, NULL);
++  jerry_value_t jret = iotjs_bufferwrap_create_buffer(isz+lsz+vt.length);
++  iotjs_bufferwrap_t* ret = iotjs_jbuffer_get_bufferwrap_ptr(jret);
++  xi(id, (uint8_t*)ret->buffer);
++  xn(vt.length, (uint8_t*)ret->buffer+isz);
++  memcpy(ret->buffer+isz+lsz, vt.buffer, vt.length);
++  iotjs_free_tmp_buffer(&vt);
++  return jret;
++}
++
++JS_FUNCTION(ToENum) {
++  JS_CHECK_ARGS(1, object);
++  jerry_value_t b = JS_GET_ARG(0, object);
++  iotjs_bufferwrap_t* pn = iotjs_jbuffer_get_bufferwrap_ptr(JS_GET_ARG(0, object));
++  if(!pn)return JS_CREATE_ERROR(COMMON, "toENum invalid parameter");
++  
++  // get epos
++  unsigned epos = 0;
++  jerry_value_t jepos = iotjs_jval_get_property(b, "epos");
++  if(jerry_value_is_number(jepos)) 
++    epos = (unsigned) iotjs_jval_as_number(jepos);
++  jerry_release_value(jepos);
++  if(epos >= pn->length)return JS_CREATE_ERROR(COMMON, "toENum invalid epos");
++
++  // get value
++  const uint8_t* p = (const uint8_t*)(pn->buffer+epos);
++  unsigned isz = 0;
++  int64_t ret = 0;
++  if(p[0] == 0xff){
++    ret = -1;
++    isz = 1;
++  } else if(p[0] & 0x80){
++    ret = p[0] & 0x7f;
++    isz = 1;
++  } else if(p[0] & 0x40){
++    ret = p[0] & 0x3f;
++    isz = 2;
++  } else if(p[0] & 0x20){
++    ret = p[0] & 0x1f;
++    isz = 3;
++  } else if(p[0] & 0x10){
++    ret = p[0] & 0xf;
++    isz = 4;
++  } else if(p[0] & 0x8){
++    ret = p[0] & 0x7;
++    isz = 5;
++  } else if(p[0] & 0x4){
++    ret = p[0] & 0x3;
++    isz = 6;
++  } else if(p[0] & 0x2){
++    ret = p[0] & 0x1;
++    isz = 7;
++  } else {
++    isz = 8;
++  }
++  if(isz + epos > pn->length) return JS_CREATE_ERROR(COMMON, "toENum invalid enum");
++
++  // set epos
++  epos += isz;
++  iotjs_jval_set_property_number(b, "epos", epos);
++
++  // get other bytes of value
++  while(isz > 1){
++    isz -= 1;
++    p++;
++    ret = (ret<<8) + *p;
++  }
++  return jerry_create_number(ret);
++}
++
++JS_FUNCTION(ToNumber) {
++  JS_CHECK_ARGS(1, object);
++  iotjs_bufferwrap_t* pn = iotjs_jbuffer_get_bufferwrap_ptr(JS_GET_ARG(0, object));
++  if(!pn)return JS_CREATE_ERROR(COMMON, "toNum invalid parameter");
++  int64_t n = -1;
++  const uint8_t* p = (const uint8_t*)pn->buffer;
++  if(pn->length == 1) n = p[0];
++  if(pn->length == 2) n = (p[0]<<8) + p[1];
++  if(pn->length == 3) n = (p[0]<<16) + (p[1]<<8) + p[2];
++  if(pn->length == 4) n = (p[0]<<24) + (p[1]<<16) + (p[2]<<8) + p[3];
++  return jerry_create_number(n);
++}
++
++JS_FUNCTION(FromDouble) {
++  JS_CHECK_ARGS(1, number);
++  double v = JS_GET_ARG(0, number);
++
++  jerry_value_t jret = iotjs_bufferwrap_create_buffer(sizeof(v));
++  iotjs_bufferwrap_t* ret = iotjs_jbuffer_get_bufferwrap_ptr(jret);
++  memcpy(ret->buffer, &v, sizeof(v));
++  return jret;
++}
++
++JS_FUNCTION(ToDouble) {
++  JS_CHECK_ARGS(1, object);
++  iotjs_bufferwrap_t* pn = iotjs_jbuffer_get_bufferwrap_ptr(JS_GET_ARG(0, object));
++
++  double v = 0;
++  if(!pn || pn->length != sizeof(v))return JS_CREATE_ERROR(COMMON, "toDouble invalid parameter");
++  memcpy(&v, pn->buffer, sizeof(v));
++  return jerry_create_number(v);
++}
++
+ jerry_value_t InitBuffer(void) {
+   jerry_value_t buffer = jerry_create_external_function(Buffer);
++  iotjs_jval_set_method(buffer, "fromNumber", FromNumber);
++  iotjs_jval_set_method(buffer, "fromEBML", FromEBML);
++  iotjs_jval_set_method(buffer, "toENum", ToENum);
++  iotjs_jval_set_method(buffer, "toNumber", ToNumber);
++  iotjs_jval_set_method(buffer, "fromDouble", FromDouble);
++  iotjs_jval_set_method(buffer, "toDouble", ToDouble);
+   iotjs_jval_set_method(buffer, IOTJS_MAGIC_STRING_BYTELENGTH, ByteLength);
+   iotjs_jval_set_method(buffer, IOTJS_MAGIC_STRING_COMPARE, Compare);
+   iotjs_jval_set_method(buffer, IOTJS_MAGIC_STRING_COPY, Copy);
+diff --git a/src/modules/iotjs_module_crypto.c b/src/modules/iotjs_module_crypto.c
+index 127e5c3..5063dca 100644
+--- a/src/modules/iotjs_module_crypto.c
++++ b/src/modules/iotjs_module_crypto.c
+@@ -44,430 +44,132 @@
+ #include "iotjs_module_crypto.h"
+ #include "iotjs_module_buffer.h"
+ 
+-/* These enum values are the same as the ones in crypto.js as well as the
+-   corresponding ones in sha.h in mbedTLS.*/
+-typedef enum {
+-  IOTJS_CRYPTO_SHA1 = 4,
+-  IOTJS_CRYPTO_SHA256 = 6,
+-} iotjs_crypto_sha_t;
+-
+ #if !ENABLE_MODULE_TLS
+-const char no_tls_err_str[] = "TLS module must be enabled to use this feature";
+-
+-/*
+- * 32-bit integer manipulation macros (big endian)
+- */
+-#ifndef GET_UINT32_BE
+-#define GET_UINT32_BE(n, b, i)                                          \
+-  {                                                                     \
+-    (n) = ((uint32_t)(b)[(i)] << 24) | ((uint32_t)(b)[(i) + 1] << 16) | \
+-          ((uint32_t)(b)[(i) + 2] << 8) | ((uint32_t)(b)[(i) + 3]);     \
+-  }
+-#endif
+-
+-#ifndef PUT_UINT32_BE
+-#define PUT_UINT32_BE(n, b, i)                 \
+-  {                                            \
+-    (b)[(i)] = (unsigned char)((n) >> 24);     \
+-    (b)[(i) + 1] = (unsigned char)((n) >> 16); \
+-    (b)[(i) + 2] = (unsigned char)((n) >> 8);  \
+-    (b)[(i) + 3] = (unsigned char)((n));       \
+-  }
++"TLS module must be enabled to use this feature";
+ #endif
+ 
+-static int iotjs_sha1_process(uint32_t state[5], const unsigned char data[64]) {
+-  uint32_t temp, W[16], A, B, C, D, E;
+-
+-  GET_UINT32_BE(W[0], data, 0);
+-  GET_UINT32_BE(W[1], data, 4);
+-  GET_UINT32_BE(W[2], data, 8);
+-  GET_UINT32_BE(W[3], data, 12);
+-  GET_UINT32_BE(W[4], data, 16);
+-  GET_UINT32_BE(W[5], data, 20);
+-  GET_UINT32_BE(W[6], data, 24);
+-  GET_UINT32_BE(W[7], data, 28);
+-  GET_UINT32_BE(W[8], data, 32);
+-  GET_UINT32_BE(W[9], data, 36);
+-  GET_UINT32_BE(W[10], data, 40);
+-  GET_UINT32_BE(W[11], data, 44);
+-  GET_UINT32_BE(W[12], data, 48);
+-  GET_UINT32_BE(W[13], data, 52);
+-  GET_UINT32_BE(W[14], data, 56);
+-  GET_UINT32_BE(W[15], data, 60);
+-
+-#define S(x, n) ((x << n) | ((x & 0xFFFFFFFF) >> (32 - n)))
+-
+-#define R(t)                                                           \
+-  (temp = W[(t - 3) & 0x0F] ^ W[(t - 8) & 0x0F] ^ W[(t - 14) & 0x0F] ^ \
+-          W[t & 0x0F],                                                 \
+-   (W[t & 0x0F] = S(temp, 1)))
+-
+-#define P(a, b, c, d, e, x)            \
+-  {                                    \
+-    e += S(a, 5) + F(b, c, d) + K + x; \
+-    b = S(b, 30);                      \
+-  }
+-
+-  A = state[0];
+-  B = state[1];
+-  C = state[2];
+-  D = state[3];
+-  E = state[4];
+-
+-#define F(x, y, z) (z ^ (x & (y ^ z)))
+-#define K 0x5A827999
+-
+-  P(A, B, C, D, E, W[0]);
+-  P(E, A, B, C, D, W[1]);
+-  P(D, E, A, B, C, W[2]);
+-  P(C, D, E, A, B, W[3]);
+-  P(B, C, D, E, A, W[4]);
+-  P(A, B, C, D, E, W[5]);
+-  P(E, A, B, C, D, W[6]);
+-  P(D, E, A, B, C, W[7]);
+-  P(C, D, E, A, B, W[8]);
+-  P(B, C, D, E, A, W[9]);
+-  P(A, B, C, D, E, W[10]);
+-  P(E, A, B, C, D, W[11]);
+-  P(D, E, A, B, C, W[12]);
+-  P(C, D, E, A, B, W[13]);
+-  P(B, C, D, E, A, W[14]);
+-  P(A, B, C, D, E, W[15]);
+-  P(E, A, B, C, D, R(16));
+-  P(D, E, A, B, C, R(17));
+-  P(C, D, E, A, B, R(18));
+-  P(B, C, D, E, A, R(19));
+-
+-#undef K
+-#undef F
+-
+-#define F(x, y, z) (x ^ y ^ z)
+-#define K 0x6ED9EBA1
+-
+-  P(A, B, C, D, E, R(20));
+-  P(E, A, B, C, D, R(21));
+-  P(D, E, A, B, C, R(22));
+-  P(C, D, E, A, B, R(23));
+-  P(B, C, D, E, A, R(24));
+-  P(A, B, C, D, E, R(25));
+-  P(E, A, B, C, D, R(26));
+-  P(D, E, A, B, C, R(27));
+-  P(C, D, E, A, B, R(28));
+-  P(B, C, D, E, A, R(29));
+-  P(A, B, C, D, E, R(30));
+-  P(E, A, B, C, D, R(31));
+-  P(D, E, A, B, C, R(32));
+-  P(C, D, E, A, B, R(33));
+-  P(B, C, D, E, A, R(34));
+-  P(A, B, C, D, E, R(35));
+-  P(E, A, B, C, D, R(36));
+-  P(D, E, A, B, C, R(37));
+-  P(C, D, E, A, B, R(38));
+-  P(B, C, D, E, A, R(39));
+-
+-#undef K
+-#undef F
+-
+-#define F(x, y, z) ((x & y) | (z & (x | y)))
+-#define K 0x8F1BBCDC
+-
+-  P(A, B, C, D, E, R(40));
+-  P(E, A, B, C, D, R(41));
+-  P(D, E, A, B, C, R(42));
+-  P(C, D, E, A, B, R(43));
+-  P(B, C, D, E, A, R(44));
+-  P(A, B, C, D, E, R(45));
+-  P(E, A, B, C, D, R(46));
+-  P(D, E, A, B, C, R(47));
+-  P(C, D, E, A, B, R(48));
+-  P(B, C, D, E, A, R(49));
+-  P(A, B, C, D, E, R(50));
+-  P(E, A, B, C, D, R(51));
+-  P(D, E, A, B, C, R(52));
+-  P(C, D, E, A, B, R(53));
+-  P(B, C, D, E, A, R(54));
+-  P(A, B, C, D, E, R(55));
+-  P(E, A, B, C, D, R(56));
+-  P(D, E, A, B, C, R(57));
+-  P(C, D, E, A, B, R(58));
+-  P(B, C, D, E, A, R(59));
+-
+-#undef K
+-#undef F
+-
+-#define F(x, y, z) (x ^ y ^ z)
+-#define K 0xCA62C1D6
+-
+-  P(A, B, C, D, E, R(60));
+-  P(E, A, B, C, D, R(61));
+-  P(D, E, A, B, C, R(62));
+-  P(C, D, E, A, B, R(63));
+-  P(B, C, D, E, A, R(64));
+-  P(A, B, C, D, E, R(65));
+-  P(E, A, B, C, D, R(66));
+-  P(D, E, A, B, C, R(67));
+-  P(C, D, E, A, B, R(68));
+-  P(B, C, D, E, A, R(69));
+-  P(A, B, C, D, E, R(70));
+-  P(E, A, B, C, D, R(71));
+-  P(D, E, A, B, C, R(72));
+-  P(C, D, E, A, B, R(73));
+-  P(B, C, D, E, A, R(74));
+-  P(A, B, C, D, E, R(75));
+-  P(E, A, B, C, D, R(76));
+-  P(D, E, A, B, C, R(77));
+-  P(C, D, E, A, B, R(78));
+-  P(B, C, D, E, A, R(79));
+-
+-#undef K
+-#undef F
+-
+-  state[0] += A;
+-  state[1] += B;
+-  state[2] += C;
+-  state[3] += D;
+-  state[4] += E;
+-
+-  return (0);
+-}
++#include "mbedtls/md.h"
++#include "mbedtls/pk.h"
++#include "mbedtls/base64.h"
+ 
++static const jerry_object_native_info_t hash_native_info = {
++  .free_cb = (jerry_object_native_free_callback_t)mbedtls_md_free
++};
+ 
+-static const unsigned char sha1_padding[64] = { 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+-                                                0,    0, 0, 0, 0, 0, 0, 0, 0, 0,
+-                                                0,    0, 0, 0, 0, 0, 0, 0, 0, 0,
+-                                                0,    0, 0, 0, 0, 0, 0, 0, 0, 0,
+-                                                0,    0, 0, 0, 0, 0, 0, 0, 0, 0,
+-                                                0,    0, 0, 0, 0, 0, 0, 0, 0, 0,
+-                                                0,    0, 0, 0 };
++JS_FUNCTION(HashBind) {
++  JS_CHECK_ARGS(2, object, string);
+ 
++  // get all parameters
++  jerry_value_t jobject = JS_GET_ARG(0, object);
+ 
+-static int iotjs_sha1_update(uint32_t total[2], uint32_t state[5],
+-                             unsigned char buffer[64],
+-                             const unsigned char *in_buff, size_t buff_len) {
+-  int ret;
+-  size_t fill;
+-  uint32_t left;
++  char sname[16];
++  iotjs_string_t tname = JS_GET_ARG(1, string);
++  strncpy(sname, (const char *)iotjs_string_data(&tname), 15);
++  iotjs_string_destroy(&tname);
+ 
+-  if (buff_len == 0) {
+-    return 0;
++  for(int i = 0; i < 15; i++){
++      if(sname[i] >= 'a' && sname[i] <= 'z') sname[i] &= 0xdf; // to upper
+   }
++  sname[15] = 0;
+ 
+-  left = total[0] & 0x3F;
+-  fill = 64 - left;
+-
+-  total[0] += (uint32_t)buff_len;
+-  total[0] &= 0xFFFFFFFF;
+-
+-  if (total[0] < (uint32_t)buff_len) {
+-    total[1]++;
++  // get md_info
++  const mbedtls_md_info_t *info = mbedtls_md_info_from_string(sname);
++  if (!info) {
++    return JS_CREATE_ERROR(COMMON, "Hash: Unknown algorithm");
+   }
+ 
+-  if (left && buff_len >= fill) {
+-    memcpy((void *)(buffer + left), in_buff, fill);
+-
+-    if ((ret = iotjs_sha1_process(state, buffer)) != 0) {
+-      return ret;
+-    }
+-
+-    in_buff += fill;
+-    buff_len -= fill;
+-    left = 0;
+-  }
++  // get key if provided
++  iotjs_tmp_buffer_t key;
++  if (jargc > 2) {
++    iotjs_jval_as_tmp_buffer(JS_GET_ARG(2, any), &key);
++    if (jerry_value_is_error(key.jval))
++      return key.jval;
+ 
+-  while (buff_len >= 64) {
+-    if ((ret = iotjs_sha1_process(state, buffer)) != 0) {
+-      return ret;
+-    }
++  } else {
++    key.buffer = NULL;
++    key.length = 0;
+   }
+ 
+-  if (buff_len > 0) {
+-    memcpy((void *)(buffer + left), in_buff, buff_len);
++  // setup
++  mbedtls_md_context_t *hash = (mbedtls_md_context_t *)iotjs_buffer_allocate(
++      sizeof(mbedtls_md_context_t));
++  jerry_set_object_native_pointer(jobject, hash, &hash_native_info);
++
++  mbedtls_md_setup(hash, info, key.buffer != NULL);
++  if (key.buffer) {
++    mbedtls_md_hmac_starts(hash, (uint8_t *)key.buffer, key.length);
++    iotjs_free_tmp_buffer(&key);
++  } else {
++    mbedtls_md_starts(hash);
+   }
+-
+-  return 0;
++  return jerry_create_undefined();
+ }
+ 
+-
+-static int iotjs_sha1_finish(uint32_t total[2], uint32_t state[5],
+-                             unsigned char buffer[64],
+-                             unsigned char *out_buff) {
+-  int ret;
+-  uint32_t last, padn;
+-  uint32_t high, low;
+-  unsigned char msglen[8];
+-
+-  high = (total[0] >> 29) | (total[1] << 3);
+-  low = (total[0] << 3);
+-
+-  PUT_UINT32_BE(high, msglen, 0);
+-  PUT_UINT32_BE(low, msglen, 4);
+-
+-  last = total[0] & 0x3F;
+-  padn = (last < 56) ? (56 - last) : (120 - last);
+-
+-  if ((ret = iotjs_sha1_update(total, state, buffer, sha1_padding, padn)) !=
+-      0) {
+-    return ret;
+-  }
+-
+-  if ((ret = iotjs_sha1_update(total, state, buffer, msglen, 8)) != 0) {
+-    return ret;
++JS_FUNCTION(HashUpdate) {
++  JS_CHECK_ARGS(2, object, any);
++  jerry_value_t jobject = JS_GET_ARG(0, object);
++  mbedtls_md_context_t *hash =
++      iotjs_jval_get_object_native_handle(jobject, &hash_native_info);
++  if (!hash)
++    return JS_CREATE_ERROR(COMMON, "Hash: not bind");
++
++  iotjs_tmp_buffer_t data;
++  iotjs_jval_as_tmp_buffer(JS_GET_ARG(1, any), &data);
++  if (jerry_value_is_error(data.jval))
++    return data.jval;
++
++  if (hash->hmac_ctx) {
++    mbedtls_md_hmac_update(hash, (uint8_t *)data.buffer, data.length);
++  } else {
++    mbedtls_md_update(hash, (uint8_t *)data.buffer, data.length);
+   }
++  iotjs_free_tmp_buffer(&data);
+ 
+-  PUT_UINT32_BE(state[0], out_buff, 0);
+-  PUT_UINT32_BE(state[1], out_buff, 4);
+-  PUT_UINT32_BE(state[2], out_buff, 8);
+-  PUT_UINT32_BE(state[3], out_buff, 12);
+-  PUT_UINT32_BE(state[4], out_buff, 16);
+-
+-  return 0;
+-}
+-#else /* ENABLE_MODULE_TLS */
+-
+-#include "mbedtls/pk.h"
+-#include "mbedtls/sha1.h"
+-#include "mbedtls/sha256.h"
+-
+-#endif /* !ENABLE_MODULE_TLS */
+-
+-size_t iotjs_sha1_encode(unsigned char **out_buff, const unsigned char *in_buff,
+-                         size_t buff_len) {
+-  size_t sha1_size = 20; // 160 bytes
+-  *out_buff = IOTJS_CALLOC(sha1_size, unsigned char);
+-#if !ENABLE_MODULE_TLS
+-  uint32_t total[2] = { 0 };
+-  uint32_t state[5] = { 0 };
+-  unsigned char buffer[64] = { 0 };
+-
+-  total[0] = 0;
+-  total[1] = 0;
+-
+-  state[0] = 0x67452301;
+-  state[1] = 0xEFCDAB89;
+-  state[2] = 0x98BADCFE;
+-  state[3] = 0x10325476;
+-  state[4] = 0xC3D2E1F0;
+-
+-  iotjs_sha1_update(total, state, buffer, in_buff, buff_len);
+-  iotjs_sha1_finish(total, state, buffer, *out_buff);
+-#else /* ENABLE_MODULE_TLS */
+-  mbedtls_sha1_context sha_ctx;
+-  mbedtls_sha1_init(&sha_ctx);
+-#if defined(__TIZENRT__)
+-  mbedtls_sha1_starts(&sha_ctx);
+-  mbedtls_sha1_update(&sha_ctx, in_buff, buff_len);
+-  mbedtls_sha1_finish(&sha_ctx, *out_buff);
+-#else  /* !__TIZENRT__ */
+-  mbedtls_sha1_starts_ret(&sha_ctx);
+-  mbedtls_sha1_update_ret(&sha_ctx, in_buff, buff_len);
+-  mbedtls_sha1_finish_ret(&sha_ctx, *out_buff);
+-#endif /* __TIZENRT__ */
+-  mbedtls_sha1_free(&sha_ctx);
+-#endif /* ENABLE_MODULE_TLS */
+-
+-  return sha1_size;
++  return jerry_acquire_value(jobject);
+ }
+ 
+-
+-#if ENABLE_MODULE_TLS
+-size_t iotjs_sha256_encode(unsigned char **out_buff,
+-                           const unsigned char *in_buff, size_t buff_len) {
+-  size_t sha256_size = 32;
+-  *out_buff = IOTJS_CALLOC(sha256_size, unsigned char);
+-
+-  mbedtls_sha256_context sha_ctx;
+-  mbedtls_sha256_init(&sha_ctx);
+-#if defined(__TIZENRT__)
+-  mbedtls_sha256_starts(&sha_ctx, 0);
+-  mbedtls_sha256_update(&sha_ctx, in_buff, buff_len);
+-  mbedtls_sha256_finish(&sha_ctx, *out_buff);
+-#else  /* !__TIZENRT__ */
+-  mbedtls_sha256_starts_ret(&sha_ctx, 0);
+-  mbedtls_sha256_update_ret(&sha_ctx, in_buff, buff_len);
+-  mbedtls_sha256_finish_ret(&sha_ctx, *out_buff);
+-#endif /* __TIZENRT__ */
+-  mbedtls_sha256_free(&sha_ctx);
+-
+-  return sha256_size;
+-}
+-#endif /* ENABLE_MODULE_TLS */
+-
+-
+-JS_FUNCTION(ShaEncode) {
+-  DJS_CHECK_THIS();
+-  DJS_CHECK_ARGS(2, any, number);
+-
+-  uint8_t type = JS_GET_ARG(1, number);
+-
+-  jerry_value_t jstring = JS_GET_ARG(0, any);
+-  iotjs_string_t user_str = iotjs_string_create();
+-
+-  if (!iotjs_jbuffer_as_string(jstring, &user_str)) {
+-    return jerry_create_undefined();
++JS_FUNCTION(HashDigest) {
++  JS_CHECK_ARGS(1, object);
++  jerry_value_t jobject = JS_GET_ARG(0, object);
++  mbedtls_md_context_t *hash =
++      iotjs_jval_get_object_native_handle(jobject, &hash_native_info);
++  if (!hash)
++    return JS_CREATE_ERROR(COMMON, "Hash: not bind");
++
++  jerry_value_t ret =
++      iotjs_bufferwrap_create_buffer(mbedtls_md_get_size(hash->md_info));
++  iotjs_bufferwrap_t *ret_wrap = iotjs_bufferwrap_from_jbuffer(ret);
++
++  if (hash->hmac_ctx) {
++    mbedtls_md_hmac_finish(hash, (uint8_t *)ret_wrap->buffer);
++  } else {
++    mbedtls_md_finish(hash, (uint8_t *)ret_wrap->buffer);
+   }
+-
+-  const unsigned char *user_str_data =
+-      (const unsigned char *)iotjs_string_data(&user_str);
+-  size_t user_str_sz = iotjs_string_size(&user_str);
+-
+-  size_t sha_sz = 0;
+-
+-  unsigned char *sha_ret = NULL;
+-
+-  switch (type) {
+-    case IOTJS_CRYPTO_SHA1: {
+-      sha_sz = iotjs_sha1_encode(&sha_ret, user_str_data, user_str_sz);
+-      break;
+-    }
+-    case IOTJS_CRYPTO_SHA256: {
+-#if !ENABLE_MODULE_TLS
+-      iotjs_string_destroy(&user_str);
+-      return JS_CREATE_ERROR(COMMON, no_tls_err_str);
+-#else  /* ENABLE_MODULE_TLS */
+-      sha_sz = iotjs_sha256_encode(&sha_ret, user_str_data, user_str_sz);
+-      break;
+-#endif /* !ENABLE_MODULE_TLS */
+-    }
+-    default: {
+-      iotjs_string_destroy(&user_str);
+-      return JS_CREATE_ERROR(COMMON, "Unknown SHA hashing algorithm");
+-    }
+-  }
+-
+-  iotjs_string_destroy(&user_str);
+-
+-  jerry_value_t ret_val;
+-  ret_val = iotjs_bufferwrap_create_buffer(sha_sz);
+-  iotjs_bufferwrap_t *ret_wrap = iotjs_bufferwrap_from_jbuffer(ret_val);
+-  memcpy(ret_wrap->buffer, sha_ret, sha_sz);
+-  ret_wrap->length = sha_sz;
+-
+-  IOTJS_RELEASE(sha_ret);
+-  return ret_val;
++  return ret;
+ }
+ 
+ 
+ JS_FUNCTION(RsaVerify) {
+-#if !ENABLE_MODULE_TLS
+-  return JS_CREATE_ERROR(COMMON, no_tls_err_str);
+-#else  /* ENABLE_MODULE_TLS */
+   DJS_CHECK_THIS();
+-  DJS_CHECK_ARGS(2, any, any);
++  DJS_CHECK_ARGS(3, object, any, any);
++
++  jerry_value_t jobject = JS_GET_ARG(0, any);
++  jerry_value_t jkey = JS_GET_ARG(1, any);
++  jerry_value_t jsignature = JS_GET_ARG(2, any);
++
++  mbedtls_md_context_t *hash =
++      iotjs_jval_get_object_native_handle(jobject, &hash_native_info);
++  if (!hash)
++    return JS_CREATE_ERROR(COMMON, "Hash: not bind");
+ 
+-  uint8_t type = JS_GET_ARG(0, number);
+-  jerry_value_t jdata = JS_GET_ARG(1, any);
+-  jerry_value_t jkey = JS_GET_ARG(2, any);
+-  jerry_value_t jsignature = JS_GET_ARG(3, any);
++  uint8_t digest[64];
++  mbedtls_md_finish(hash, digest);
+ 
+   iotjs_string_t key = iotjs_string_create();
+-  iotjs_string_t data = iotjs_string_create();
+   iotjs_string_t signature = iotjs_string_create();
+-
+   if ((!iotjs_jbuffer_as_string(jkey, &key)) ||
+-      (!iotjs_jbuffer_as_string(jdata, &data)) ||
+       (!iotjs_jbuffer_as_string(jsignature, &signature))) {
+     iotjs_string_destroy(&key);
+-    iotjs_string_destroy(&data);
+     iotjs_string_destroy(&signature);
+ 
+     return jerry_create_boolean(false);
+@@ -480,62 +182,54 @@ JS_FUNCTION(RsaVerify) {
+       iotjs_base64_decode(&raw_signature, iotjs_string_data(&signature),
+                           iotjs_string_size(&signature));
+   mbedtls_pk_init(&pk);
+-  int ret_val =
+-      mbedtls_pk_parse_public_key(&pk, (const unsigned char *)iotjs_string_data(
+-                                           &key),
+-                                  iotjs_string_size(&key) + 1);
+-
+-
+-  jerry_value_t js_ret_val = jerry_create_boolean(true);
+-  if ((ret_val =
+-           mbedtls_pk_verify(&pk, type,
+-                             (const unsigned char *)iotjs_string_data(&data), 0,
+-                             (const unsigned char *)raw_signature,
+-                             raw_signature_sz))) {
+-    js_ret_val = jerry_create_boolean(false);
+-  }
++  mbedtls_pk_parse_public_key(&pk, (const unsigned char *)iotjs_string_data(&key),
++    iotjs_string_size(&key) + 1);
++
++  int ret_val = mbedtls_pk_verify(&pk, mbedtls_md_get_type(hash->md_info), digest, mbedtls_md_get_size(hash->md_info),
++    (const unsigned char *)raw_signature, raw_signature_sz);
+ 
+   iotjs_string_destroy(&key);
+-  iotjs_string_destroy(&data);
+   iotjs_string_destroy(&signature);
+   mbedtls_pk_free(&pk);
+   IOTJS_RELEASE(raw_signature);
+ 
+-  return js_ret_val;
+-#endif /* !ENABLE_MODULE_TLS */
++  return jerry_create_boolean(ret_val >= 0);
+ }
+ 
+-
+-JS_FUNCTION(Base64Encode) {
+-  DJS_CHECK_THIS();
++JS_FUNCTION(Base64Decode) {
++  JS_CHECK_THIS();
+ 
+   jerry_value_t jstring = JS_GET_ARG(0, any);
+   iotjs_string_t user_str = iotjs_string_create();
+ 
+-  if (!iotjs_jbuffer_as_string(jstring, &user_str)) {
++  if (!iotjs_jbuffer_as_string(jstring, &user_str))
+     return jerry_create_undefined();
+-  }
+ 
+-  unsigned char *out_buff = NULL;
+-  size_t out_size =
+-      iotjs_base64_encode(&out_buff,
+-                          (const unsigned char *)iotjs_string_data(&user_str),
+-                          iotjs_string_size(&user_str));
++  jerry_value_t ret =
++      iotjs_bufferwrap_create_buffer(iotjs_string_size(&user_str) / 4 * 3);
++  iotjs_bufferwrap_t *ret_wrap = iotjs_bufferwrap_from_jbuffer(ret);
+ 
++  mbedtls_base64_decode((uint8_t *)ret_wrap->buffer, ret_wrap->length,
++                        &ret_wrap->length,
++                        (const uint8_t *)iotjs_string_data(&user_str),
++                        iotjs_string_size(&user_str));
+   iotjs_string_destroy(&user_str);
+-  jerry_value_t ret_val = jerry_create_string_sz(out_buff, out_size);
+ 
+-  IOTJS_RELEASE(out_buff);
+-  return ret_val;
++  iotjs_jval_set_property_number(ret, IOTJS_MAGIC_STRING_LENGTH,
++                                 ret_wrap->length);
++  return ret;
+ }
+ 
+ 
+ jerry_value_t InitCrypto() {
+   jerry_value_t jcrypto = jerry_create_object();
+ 
+-  iotjs_jval_set_method(jcrypto, IOTJS_MAGIC_STRING_SHAENCODE, ShaEncode);
+-  iotjs_jval_set_method(jcrypto, IOTJS_MAGIC_STRING_BASE64ENCODE, Base64Encode);
+   iotjs_jval_set_method(jcrypto, IOTJS_MAGIC_STRING_RSAVERIFY, RsaVerify);
+ 
++  iotjs_jval_set_method(jcrypto, "hashBind", HashBind);
++  iotjs_jval_set_method(jcrypto, "hashUpdate", HashUpdate);
++  iotjs_jval_set_method(jcrypto, "hashDigest", HashDigest);
++  iotjs_jval_set_method(jcrypto, "base64Decode", Base64Decode);
++
+   return jcrypto;
+ }
