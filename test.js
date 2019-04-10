@@ -141,6 +141,7 @@ test('convert', true, function(){
 test(function(resovle){
     try{
         var spawn = require('child_process').spawn;
+        var mkvinfo = spawn('mkvinfo', ['-v', mkvout]);
     }
     catch(err){
         console.log('iotjs');
@@ -148,10 +149,14 @@ test(function(resovle){
         return;
     }
 
+    mkvinfo.on('error', function(){
+        console.log('W: mkvinfo is not installed');
+        process.exit(0);
+    });
+
     console.log('run mkvinfo');
 
     var bcnt = 0;
-    var mkvinfo = spawn('mkvinfo', ['-v', mkvout]);
     mkvinfo.stdout.on('data', function(data){
         if(data.indexOf('SimpleBlock') > 0) bcnt += 1;
         if(data.indexOf('Unknown element') > 0)

@@ -1,27 +1,32 @@
 {
-  "name": "aws-kinesis-put-media-nodejs",
+  "name": "aws-kinesis-producer-js",
   "version": "0.1.0",
-  "description": "aws kinesis put media nodejs module using pure javascript",
+  "description": "aws kinesis producer javascript module working on nodejs / iotjs",
   "main": "index.js",
   "directories": {
     "test": "test"
   },
   "scripts": {
-    "test": "test"
+    "test": "node test.js",
+    "lint": "node_modules/.bin/jshint index.js"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/juliuswwj/aws-kinesis-put-media-nodejs.git"
+    "url": "git+https://github.com/juliuswwj/aws-kinesis-producer-js.git"
   },
   "keywords": [
     "aws",
     "kinesis",
-    "streaming"
+    "producer",
+    "iotjs"
   ],
   "author": "juliuswwj@gmail.com",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/juliuswwj/aws-kinesis-put-media-nodejs/issues"
+    "url": "https://github.com/juliuswwj/aws-kinesis-producer-js/issues"
   },
-  "homepage": "https://github.com/juliuswwj/aws-kinesis-put-media-nodejs#readme"
+  "homepage": "https://github.com/juliuswwj/aws-kinesis-producer-js#readme",
+  "devDependencies": {
+    "jshint": "^2.10.2"
+  }
 }

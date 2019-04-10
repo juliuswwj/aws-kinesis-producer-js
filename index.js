@@ -1,4 +1,5 @@
-'use strict'
+/*jshint node: true */
+'use strict';
 
 var https = require('https');
 var crypto = require('crypto');
@@ -10,7 +11,7 @@ if(!fromNumber) fromNumber = function(data){
     else if(data < 0x10000) return new Buffer([data>>8, data&0xff]);
     else if(data < 0x1000000) return new Buffer([data>>16, (data>>8)&0xff, data&0xff]);
     else return new Buffer([data>>24, (data>>16)&0xff, (data>>8)&0xff, data&0xff]);
-}
+};
 
 var fromEBML = Buffer.fromEBML;
 if(!fromEBML) fromEBML = function(n, data){
@@ -101,12 +102,12 @@ if(!fromDouble) fromDouble = function(n){
     var b = new Buffer(8);
     b.writeDoubleBE(n, 0);
     return b;
-}
+};
 
 var toDouble = Buffer.toDouble;
 if(!toDouble) toDouble = function(b){
-    return b.readDoubleBE(n, 0);
-}
+    return b.readDoubleBE(0);
+};
 
 
 
@@ -265,7 +266,7 @@ function MKVExtractor(fname){
     }
     this.options = {};
     this.baserptr = this.rptr;
-};
+}
 
 MKVExtractor.prototype.reset = function(){
     this.rptr = this.baserptr;
@@ -277,7 +278,7 @@ MKVExtractor.prototype.getnum = function(){
     var v = toENum(buf);
     this.rptr += buf.epos;
     return v;
-}
+};
 
 MKVExtractor.prototype.ebml = function(){
     var id = this.getnum();
@@ -288,7 +289,7 @@ MKVExtractor.prototype.ebml = function(){
     fs.readSync(this.fd, data, 0, data.length, this.rptr);
     this.rptr += len;
     return {id: id, data: data};
-}
+};
 
 MKVExtractor.prototype.run = function(cb){
     var options = this.options;
@@ -331,7 +332,7 @@ MKVExtractor.prototype.run = function(cb){
         } 
         //else console.log(e);
     }
-}
+};
 
 /**
  * @param {object} options 
@@ -403,7 +404,8 @@ function genAWS4Auth(req, txt, options)
     // assume empty query string
     var str = [req.method, req.path, ''];
     var signed = [];
-    for(var i = 0; i < fields.length; i++){
+    var i = 0;
+    for(; i < fields.length; i++){
         var n = fields[i];
         var v = req.headers[n];
         if(! v ) continue;
@@ -426,8 +428,9 @@ function genAWS4Auth(req, txt, options)
     var cachename = credential.join('/');
     var key = options[cachename];
     if(!key){
-        var key = 'AWS4' + options.key;
-        for(var i = 0; i < credential.length; i++){
+        key = 'AWS4' + options.key;
+        i = 0;
+        for(i = 0; i < credential.length; i++){
             key = hmac(key, credential[i]);
         }
         options[cachename] = key;
@@ -440,8 +443,8 @@ function genAWS4Auth(req, txt, options)
     str = algorithm + ' Credential=' + options.keyid + '/' + cachename + 
         ', SignedHeaders=' + signed.join(';') + 
         ', Signature=' + hmac(key, str, 'hex');
-    req.headers['Authorization'] = str;
-};
+    req.headers.Authorization = str;
+}
 
 
 /**
@@ -486,7 +489,7 @@ Kinesis.prototype.getEndPoint = function(cb){
     });
     req.write(txt);
     req.end();
-}
+};
 
 function putMedia(options, url, cb, cb2){
     // parse https://s-4010bf70.kinesisvideo.us-west-2.amazonaws.com
@@ -523,7 +526,7 @@ function putMedia(options, url, cb, cb2){
         });
         res.on('end', function(){
             cb(null, 'end');
-        })
+        });
         cb(null, 'connect');
         cb2();
     });
