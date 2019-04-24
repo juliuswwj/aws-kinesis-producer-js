@@ -27,6 +27,19 @@ index 6581586..c400d46 100644
  /* \} name SECTION: mbed TLS modules */
  
  #endif /* MBEDTLS_CONFIG_H */
+diff --git a/src/iotjs.c b/src/iotjs.c
+index 84d0235..3b31c7e 100644
+--- a/src/iotjs.c
++++ b/src/iotjs.c
+@@ -183,7 +183,7 @@ void iotjs_run(iotjs_environment_t* env) {
+     bool throw_exception = !iotjs_environment_is_exiting(env);
+ #ifdef JERRY_DEBUGGER
+     throw_exception = throw_exception &&
+-                      !iotjs_environment_config(env)->debugger->context_reset;
++                      (!iotjs_environment_config(env)->debugger || !iotjs_environment_config(env)->debugger->context_reset);
+ #endif
+     if (throw_exception) {
+       iotjs_uncaught_exception(errval);
 diff --git a/src/iotjs_uv_handle.c b/src/iotjs_uv_handle.c
 index defa162..f4d74a3 100644
 --- a/src/iotjs_uv_handle.c
@@ -470,10 +483,10 @@ index 8ffa696..c355d35 100644
  
  
 diff --git a/src/modules/iotjs_module_buffer.c b/src/modules/iotjs_module_buffer.c
-index c70f737..e2d77b3 100644
+index f28bded..0fde84c 100644
 --- a/src/modules/iotjs_module_buffer.c
 +++ b/src/modules/iotjs_module_buffer.c
-@@ -761,8 +761,272 @@ JS_FUNCTION(FromArrayBuffer) {
+@@ -760,8 +760,272 @@ JS_FUNCTION(FromArrayBuffer) {
  }
  
  
@@ -747,10 +760,10 @@ index c70f737..e2d77b3 100644
    iotjs_jval_set_method(buffer, IOTJS_MAGIC_STRING_COMPARE, Compare);
    iotjs_jval_set_method(buffer, IOTJS_MAGIC_STRING_COPY, Copy);
 diff --git a/src/modules/iotjs_module_crypto.c b/src/modules/iotjs_module_crypto.c
-index 127e5c3..5063dca 100644
+index 127e5c3..ed49901 100644
 --- a/src/modules/iotjs_module_crypto.c
 +++ b/src/modules/iotjs_module_crypto.c
-@@ -44,430 +44,132 @@
+@@ -44,430 +44,129 @@
  #include "iotjs_module_crypto.h"
  #include "iotjs_module_buffer.h"
  
@@ -1068,9 +1081,8 @@ index 127e5c3..5063dca 100644
 +JS_FUNCTION(HashUpdate) {
 +  JS_CHECK_ARGS(2, object, any);
 +  jerry_value_t jobject = JS_GET_ARG(0, object);
-+  mbedtls_md_context_t *hash =
-+      iotjs_jval_get_object_native_handle(jobject, &hash_native_info);
-+  if (!hash)
++  mbedtls_md_context_t *hash;
++  if(!jerry_get_object_native_pointer(jobject, (void**)&hash, &hash_native_info))
 +    return JS_CREATE_ERROR(COMMON, "Hash: not bind");
 +
 +  iotjs_tmp_buffer_t data;
@@ -1179,9 +1191,8 @@ index 127e5c3..5063dca 100644
 +JS_FUNCTION(HashDigest) {
 +  JS_CHECK_ARGS(1, object);
 +  jerry_value_t jobject = JS_GET_ARG(0, object);
-+  mbedtls_md_context_t *hash =
-+      iotjs_jval_get_object_native_handle(jobject, &hash_native_info);
-+  if (!hash)
++  mbedtls_md_context_t *hash;
++  if(!jerry_get_object_native_pointer(jobject, (void**)&hash, &hash_native_info))
 +    return JS_CREATE_ERROR(COMMON, "Hash: not bind");
 +
 +  jerry_value_t ret =
@@ -1248,9 +1259,8 @@ index 127e5c3..5063dca 100644
 +  jerry_value_t jkey = JS_GET_ARG(1, any);
 +  jerry_value_t jsignature = JS_GET_ARG(2, any);
 +
-+  mbedtls_md_context_t *hash =
-+      iotjs_jval_get_object_native_handle(jobject, &hash_native_info);
-+  if (!hash)
++  mbedtls_md_context_t *hash;
++  if(!jerry_get_object_native_pointer(jobject, (void**)&hash, &hash_native_info))
 +    return JS_CREATE_ERROR(COMMON, "Hash: not bind");
  
 -  uint8_t type = JS_GET_ARG(0, number);
@@ -1272,7 +1282,7 @@ index 127e5c3..5063dca 100644
      iotjs_string_destroy(&signature);
  
      return jerry_create_boolean(false);
-@@ -480,62 +182,54 @@ JS_FUNCTION(RsaVerify) {
+@@ -480,62 +179,54 @@ JS_FUNCTION(RsaVerify) {
        iotjs_base64_decode(&raw_signature, iotjs_string_data(&signature),
                            iotjs_string_size(&signature));
    mbedtls_pk_init(&pk);
